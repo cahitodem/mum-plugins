@@ -72,8 +72,75 @@ async function resolveTmdbInfo(id, mediaType) {
   }
 }
 
+function normalizeTitle(value) {
+  return String(value || '').toLowerCase()
+    .replace(/[ıİ]/g, 'i').replace(/[şŞ]/g, 's').replace(/[ğĞ]/g, 'g')
+    .replace(/[üÜ]/g, 'u').replace(/[öÖ]/g, 'o').replace(/[çÇ]/g, 'c')
+    .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isEpisodeHref(href) {
+  return /-\d+-sezon-\d+-bolum(?:\/|$)/i.test(String(href || ''));
+}
+
+function findEpisodeHref($, seasonNum, episodeNum) {
+  var exact = new RegExp('-' + seasonNum + '-sezon-' + episodeNum + '-bolum(?:[/?#]|$)', 'i');
+  var result = null;
+  $('a[href]').each(function() {
+    var href = $(this).attr('href') || '';
+    if (exact.test(href)) { result = href; return false; }
+  });
+  return result;
+}
+
+function findShowHref($, candidates) {
+  var wanted = candidates.map(normalizeTitle).filter(Boolean);
+  var best = null, bestScore = 0;
+  $('#content a[href], a[href]').each(function() {
+    var href = $(this).attr('href') || '';
+    if (!href || isEpisodeHref(href) || /\/(?:kategori|dizi-arsivi|tag|author)\//i.test(href)) return;
+    var absolute;
+    try { absolute = new URL(href, BASE_URL).href; } catch (e) { return; }
+    if (absolute.indexOf(BASE_URL + '/') !== 0 || /[?#]/.test(absolute)) return;
+    var pathSlug = absolute.split('/').filter(Boolean).pop() || '';
+    var text = $(this).text().trim() || $(this).find('img').attr('alt') || '';
+    var score = 0;
+    wanted.forEach(function(title) {
+      var slug = normalizeTitle(pathSlug.replace(/\d+$/, '').replace(/-/g, ' '));
+      var label = normalizeTitle(text);
+      if (slug === title || label === title) score = Math.max(score, 100);
+      else if (slug.indexOf(title) === 0 || label.indexOf(title) === 0) score = Math.max(score, 75);
+      else if (title.indexOf(slug) === 0 && slug.length >= 5) score = Math.max(score, 60);
+    });
+    if (score > bestScore) { best = absolute; bestScore = score; }
+  });
+  return bestScore >= 60 ? best : null;
+}
+
+function parsePlayerPage(playerHtml, playerUrl) {
+  var $ = cheerio.load(playerHtml);
+  var source = $('#diziyouSource').attr('src') || $('video source[src]').first().attr('src');
+  if (!source) return null;
+  try { source = new URL(source, playerUrl).href; } catch (e) { return null; }
+  if (!/^https?:\/\//i.test(source)) return null;
+
+  var subtitles = [];
+  var scriptText = $('script').map(function() { return $(this).html() || ''; }).get().join('\n');
+  var trMatch = scriptText.match(/trUrl\s*:\s*['"]([^'"]+)['"]/i);
+  var enMatch = scriptText.match(/enUrl\s*:\s*['"]([^'"]+)['"]/i);
+  [[trMatch, 'Türkçe'], [enMatch, 'English']].forEach(function(entry) {
+    if (!entry[0]) return;
+    try { subtitles.push({ url: new URL(entry[0][1], playerUrl).href, language: entry[1], label: entry[1] }); } catch (e) {}
+  });
+  return { url: source, subtitles: subtitles };
+}
+
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   try {
+    if (mediaType !== 'tv' && mediaType !== 'series') return [];
+    if (!Number.isInteger(Number(seasonNum)) || Number(seasonNum) < 0 || !Number.isInteger(Number(episodeNum)) || Number(episodeNum) < 1) return [];
+    seasonNum = Number(seasonNum);
+    episodeNum = Number(episodeNum);
     const info = await resolveTmdbInfo(tmdbId, mediaType);
     const trTitle = (info.title || '').trim();
     const orgTitle = (info.origTitle || '').trim();
@@ -82,8 +149,8 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     const searchCandidates = [trTitle];
     if (orgTitle && orgTitle !== trTitle) searchCandidates.push(orgTitle);
 
-    let foundLink = null;
-    let matchedQuery = displayTitle;
+    var episodeUrl = null;
+    var showUrl = null;
 
     for (const q of searchCandidates) {
       if (!q) continue;
@@ -92,139 +159,45 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       if (!res.ok) continue;
       const html = await res.text();
       const $ = cheerio.load(html);
-
-      const searchTitleLower = q.toLowerCase().trim();
-      const orgTitleLower = (orgTitle || '').toLowerCase().trim();
-
-      const results = $('#list-series a, .list-series a, .cat-img a, .post-title a, #categorytitle a, .entry-title a');
-
-      results.each(function() {
-        const textTitle = $(this).text().toLowerCase().replace('izle', '').trim();
-        const currentHref = $(this).attr('href');
-        if (!currentHref || currentHref.includes('/kategori/')) return;
-
-        const hrefTitle = currentHref.split('/').filter(Boolean).pop().replace(/\d+$/, '').replace(/-/g, ' ').trim().toLowerCase();
-        const currentTitle = textTitle || hrefTitle;
-
-        const isExact = (currentTitle === searchTitleLower || currentTitle === orgTitleLower || hrefTitle === searchTitleLower || hrefTitle === orgTitleLower);
-        const isBrackets = (currentTitle.includes(searchTitleLower + ' (') || currentTitle.includes(orgTitleLower + ' ('));
-        const isDiziSuffix = (currentTitle.includes(searchTitleLower + ' dizi') || currentTitle.includes(orgTitleLower + ' dizi'));
-
-        if (isExact || isBrackets || isDiziSuffix) {
-          foundLink = currentHref;
-          matchedQuery = q;
-          return false;
-        }
-      });
-
-      if (foundLink) break;
-      if (!foundLink && results.length > 0 && results.length < 5) {
-        foundLink = results.first().attr('href');
-        matchedQuery = q;
-        break;
-      }
+      episodeUrl = findEpisodeHref($, seasonNum, episodeNum);
+      if (episodeUrl) break;
+      showUrl = findShowHref($, [q, trTitle, orgTitle]);
+      if (showUrl) break;
     }
 
-    if (!foundLink) return [];
-
-    const slug = foundLink.split('/').filter(Boolean).pop();
-    let epUrl = `${BASE_URL}/${slug}-${seasonNum}-sezon-${episodeNum}-bolum/`;
-
-    let epRes = await fetch(epUrl, { headers: WORKING_HEADERS });
-    if (!epRes.ok) {
-      // 1) Slug sonundaki sayıları temizleyip dene (örn: breaking-bad2 -> breaking-bad)
-      const baseSlug = slug.replace(/\d+$/, '');
-      if (baseSlug && baseSlug !== slug) {
-        const altUrl = `${BASE_URL}/${baseSlug}-${seasonNum}-sezon-${episodeNum}-bolum/`;
-        const altRes = await fetch(altUrl, { headers: WORKING_HEADERS });
-        if (altRes.ok) {
-          epUrl = altUrl;
-          epRes = altRes;
-        }
-      }
+    if (!episodeUrl && showUrl) {
+      const showRes = await fetch(showUrl, { headers: WORKING_HEADERS });
+      if (showRes.ok) episodeUrl = findEpisodeHref(cheerio.load(await showRes.text()), seasonNum, episodeNum);
     }
+    if (!episodeUrl) return [];
 
-    if (!epRes.ok) {
-      // 2) Show detay sayfasını çekip gerçek bölüm bağlantısını bul
-      try {
-        const showRes = await fetch(foundLink, { headers: WORKING_HEADERS });
-        if (showRes.ok) {
-          const showHtml = await showRes.text();
-          const epMatch = showHtml.match(new RegExp('href="([^"]*?' + seasonNum + '-sezon-' + episodeNum + '-bolum[^"]*)"', 'i'));
-          if (epMatch) {
-            epUrl = epMatch[1];
-            epRes = await fetch(epUrl, { headers: WORKING_HEADERS });
-          }
-        }
-      } catch (e) {}
-    }
-
+    try { episodeUrl = new URL(episodeUrl, BASE_URL).href; } catch (e) { return []; }
+    if (episodeUrl.indexOf(BASE_URL + '/') !== 0) return [];
+    const epRes = await fetch(episodeUrl, { headers: WORKING_HEADERS });
     if (!epRes.ok) return [];
     const epHtml = await epRes.text();
+    const $episode = cheerio.load(epHtml);
+    var playerUrl = $episode('#diziyouPlayer').attr('src');
+    if (!playerUrl) return [];
+    try { playerUrl = new URL(playerUrl, episodeUrl).href; } catch (e) { return []; }
+    if (playerUrl.indexOf(BASE_URL + '/player/') !== 0) return [];
 
-    const $ = cheerio.load(epHtml);
-    const playerSrc = $('#diziyouPlayer').attr('src');
-    if (!playerSrc) return [];
-
-    const itemId = playerSrc.split('/').pop().replace('.html', '').split('?')[0];
-    const streams = [];
-
-    const hasSub = epHtml.indexOf('turkceAltyazili') !== -1;
-    const hasDub = epHtml.indexOf('turkceDublaj') !== -1;
-
-    const dyHeaders = { 'Referer': BASE_URL + '/' };
-
-    if (hasSub) {
-      streams.push({
-        name: displayTitle,
-        title: '⌜ DiziYou ⌟ | 🌐 Türkçe Altyazılı',
-        url: `${STORAGE_URL}/episodes/${itemId}/play.m3u8`,
-        quality: '1080p',
-        type: 'hls',
-        provider: 'diziyou',
-        headers: dyHeaders,
-        behaviorHints: {
-          notWebReady: true,
-          proxyHeaders: { request: dyHeaders }
-        },
-        subtitles: [{ label: 'Turkish', url: `${STORAGE_URL}/subtitles/${itemId}/tr.vtt` }]
-      });
-    }
-
-    if (hasDub) {
-      streams.push({
-        name: displayTitle,
-        title: '⌜ DiziYou ⌟ | 🇹🇷 Türkçe Dublaj',
-        url: `${STORAGE_URL}/episodes/${itemId}_tr/play.m3u8`,
-        quality: '1080p',
-        type: 'hls',
-        provider: 'diziyou',
-        headers: dyHeaders,
-        behaviorHints: {
-          notWebReady: true,
-          proxyHeaders: { request: dyHeaders }
-        },
-        subtitles: [{ label: 'Turkish', url: `${STORAGE_URL}/subtitles/${itemId}/tr.vtt` }]
-      });
-    }
-
-    if (streams.length === 0) {
-      streams.push({
-        name: displayTitle,
-        title: '⌜ DiziYou ⌟ | 🌐 Video',
-        url: `${STORAGE_URL}/episodes/${itemId}/play.m3u8`,
-        quality: '1080p',
-        type: 'hls',
-        provider: 'diziyou',
-        headers: dyHeaders,
-        behaviorHints: {
-          notWebReady: true,
-          proxyHeaders: { request: dyHeaders }
-        }
-      });
-    }
-
-    return streams;
+    const playerRes = await fetch(playerUrl, { headers: Object.assign({}, WORKING_HEADERS, { Referer: episodeUrl }) });
+    if (!playerRes.ok) return [];
+    const parsed = parsePlayerPage(await playerRes.text(), playerUrl);
+    if (!parsed) return [];
+    const dyHeaders = { Referer: playerUrl };
+    return [{
+      name: displayTitle,
+      title: '⌜ DiziYou ⌟ | ' + displayTitle + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm',
+      url: parsed.url,
+      quality: 'HLS',
+      type: 'hls',
+      provider: 'diziyou',
+      headers: dyHeaders,
+      behaviorHints: { notWebReady: true, proxyHeaders: { request: dyHeaders } },
+      subtitles: parsed.subtitles
+    }];
   } catch (err) {
     return [];
   }

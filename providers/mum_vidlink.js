@@ -119,15 +119,15 @@ var require_config = __commonJS({
             base: "https://ddizibox.com"
           },
           diziyou: {
-            base: "https://www.diziyou.one",
-            storage: "https://storage.diziyou.one"
+            base: "https://www.diziyou.love",
+            storage: "https://storage.diziyou.love"
           }
         },
         movies: {
           filmmodu: {
-            base: "https://www.filmmodu.one",
-            live: "https://filmmodu.live",
-            player: "https://play2.pilavyerplay.top"
+            base: "https://filmmodu.icu",
+            live: "https://yabancidizifilmizle.click",
+            player: "https://pilavyerplay.top"
           },
           hdfilmcehennemi: {
             base: "https://www.hdfilmcehennemi.nl"

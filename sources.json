@@ -1,0 +1,139 @@
+{
+  "name": "MUM Plugins",
+  "version": "0.1.0",
+  "upstreamVersion": "1.8.39",
+  "sources": [
+    {
+      "key": "anthology_m3u",
+      "id": "mum_anthology_m3u",
+      "name": "Anthology M3U",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "ddizibox",
+      "id": "mum_ddizibox",
+      "name": "DDiziBox",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "diziyou",
+      "id": "mum_diziyou",
+      "name": "DiziYou",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "empty",
+      "playback": "unverified"
+    },
+    {
+      "key": "filmmodu",
+      "id": "mum_filmmodu",
+      "name": "FilmModu",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "about:error",
+      "playback": "unverified"
+    },
+    {
+      "key": "hdfilmcehennemi",
+      "id": "mum_hdfilmcehennemi",
+      "name": "HDFilmCehennemi",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "empty",
+      "playback": "unverified"
+    },
+    {
+      "key": "hdfilmdelisi",
+      "id": "mum_hdfilmdelisi",
+      "name": "HDFilmDelisi",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "hdfilmizle",
+      "id": "mum_hdfilmizle",
+      "name": "HDFilmIzle",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "setfilmizle",
+      "id": "mum_setfilmizle",
+      "name": "SetFilmIzle",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "vidlink",
+      "id": "mum_vidlink",
+      "name": "Vidlink",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "vidmody",
+      "id": "mum_vidmody",
+      "name": "Vidmody",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "webteizle",
+      "id": "mum_webteizle",
+      "name": "Webteİzle",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    }
+  ]
+}

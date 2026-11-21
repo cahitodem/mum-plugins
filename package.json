@@ -1,31 +1,28 @@
 {
-  "name": "anthology",
-  "version": "1.8.39",
-  "description": "Anthology - Nuvio ve Stremio için Doğrulanmış Türkçe Film, Dizi, Anime ve Canlı TV Eklenti Deposu",
+  "name": "mum-plugins",
+  "version": "0.1.0",
+  "description": "MUM Plugins: Nuvio Desktop film ve dizi sağlayıcıları",
   "main": "config.js",
   "scripts": {
-    "build": "node build.js && node scripts/build_stremio_catalogs.js",
+    "build": "node build.js",
     "build:providers": "node build.js",
-    "build:watch": "node build.js --watch",
-    "serve": "node server.js",
-    "test": "node scripts/test_stremio_addon.js && node scripts/test_all_catalogs.js",
-    "test:addon": "node scripts/test_stremio_addon.js",
-    "test:catalogs": "node scripts/test_all_catalogs.js",
-    "test:providers": "node scripts/test_all_providers.js",
-    "test:playability": "node scripts/test_playability.js"
+    "test": "node --test tests/adapter.test.js tests/bundles.test.js",
+    "check": "npm run build && npm test",
+    "test:provider": "node scripts/probe.js"
   },
   "keywords": [
     "nuvio",
-    "stremio",
-    "addons",
-    "providers",
-    "live-tv",
-    "turkce"
+    "movies",
+    "series"
   ],
   "author": "falsisdev",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "cheerio-without-node-native": "^0.20.2",
     "esbuild": "^0.28.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cahitodem/mum-plugins.git"
   }
 }

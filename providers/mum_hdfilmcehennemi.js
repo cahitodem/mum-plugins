@@ -1,4 +1,4 @@
-/* MUM Plugins 0.1.1; modified 2026-11-21; derived from Anthology 1.8.39. GPL-3.0-only. */
+/* MUM Plugins 0.1.2; modified 2026-11-21; derived from Anthology 1.8.39. GPL-3.0-only. */
 // Suppress provider logs which may contain signed URLs.
 var console = {log:function(){},info:function(){},warn:function(){},error:function(){},debug:function(){}};
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -35,7 +35,7 @@ var require_config = __commonJS({
   "config.json"(exports2, module2) {
     module2.exports = {
       name: "MUM Plugins",
-      version: "0.1.0",
+      version: "0.1.2",
       urls: {
         m3u: {
           film_base: "https://raw.githubusercontent.com/mooncrown04/m3ubirlestir/main/nuvio_parcalari/",
@@ -53,6 +53,15 @@ var require_config = __commonJS({
           },
           sezonlukdizi: {
             base: "https://sezonlukdizi.cc"
+          },
+          dizimom: {
+            base: "https://ddizimom.net"
+          },
+          yabancidizi: {
+            base: "https://yabancidizi.news"
+          },
+          diziboxizle: {
+            base: "https://diziboxizle.com"
           }
         },
         movies: {
@@ -81,6 +90,14 @@ var require_config = __commonJS({
           },
           webteizle: {
             base: "https://webteizle.info"
+          },
+          sinemacx: {
+            base: "https://sinemacc.com",
+            player: "https://player.filmizle.in"
+          },
+          sinewix: {
+            api_base: "https://ydfvfdizipanel.ru/public/api",
+            panel_base: "https://ydfvfdizipanel.ru"
           }
         },
         meta_resolvers: {

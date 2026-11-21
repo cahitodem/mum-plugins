@@ -1,6 +1,6 @@
 {
   "name": "MUM Plugins",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "upstreamVersion": "1.8.39",
   "sources": [
     {
@@ -145,6 +145,66 @@
       ],
       "enabled": true,
       "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "sinemacx",
+      "id": "mum_sinemacx",
+      "name": "SinemaCX",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "unverified",
+      "playback": "unverified"
+    },
+    {
+      "key": "sinewix",
+      "id": "mum_sinewix",
+      "name": "SineWix",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "unverified",
+      "playback": "unverified"
+    },
+    {
+      "key": "dizimom",
+      "id": "mum_dizimom",
+      "name": "DiziMom",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "unverified",
+      "playback": "unverified"
+    },
+    {
+      "key": "yabancidizi",
+      "id": "mum_yabancidizi",
+      "name": "YabancıDizi",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "unverified",
+      "playback": "unverified"
+    },
+    {
+      "key": "diziboxizle",
+      "id": "mum_diziboxizle",
+      "name": "DiziBoxİzle",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "unverified",
       "playback": "unverified"
     }
   ]

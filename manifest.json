@@ -1,13 +1,13 @@
 {
   "name": "MUM Plugins",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "Anthology contributors; MUM contributors",
   "description": "Film ve dizi sağlayıcıları. Kaynak bulunması oynatma doğrulaması değildir.",
   "scrapers": [
     {
       "id": "mum_anthology_m3u",
       "name": "Anthology M3U",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_anthology_m3u.js",
       "supportedTypes": [
@@ -19,7 +19,7 @@
     {
       "id": "mum_ddizibox",
       "name": "DDiziBox",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_ddizibox.js",
       "supportedTypes": [
@@ -31,7 +31,7 @@
     {
       "id": "mum_diziyou",
       "name": "DiziYou",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_diziyou.js",
       "supportedTypes": [
@@ -43,7 +43,7 @@
     {
       "id": "mum_filmmodu",
       "name": "FilmModu",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_filmmodu.js",
       "supportedTypes": [
@@ -55,7 +55,7 @@
     {
       "id": "mum_hdfilmcehennemi",
       "name": "HDFilmCehennemi",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_hdfilmcehennemi.js",
       "supportedTypes": [
@@ -67,7 +67,7 @@
     {
       "id": "mum_hdfilmdelisi",
       "name": "HDFilmDelisi",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_hdfilmdelisi.js",
       "supportedTypes": [
@@ -79,7 +79,7 @@
     {
       "id": "mum_hdfilmizle",
       "name": "HDFilmIzle",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_hdfilmizle.js",
       "supportedTypes": [
@@ -91,7 +91,7 @@
     {
       "id": "mum_setfilmizle",
       "name": "SetFilmIzle",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_setfilmizle.js",
       "supportedTypes": [
@@ -103,7 +103,7 @@
     {
       "id": "mum_sezonlukdizi",
       "name": "SezonlukDizi",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_sezonlukdizi.js",
       "supportedTypes": [
@@ -114,7 +114,7 @@
     {
       "id": "mum_vidlink",
       "name": "Vidlink",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_vidlink.js",
       "supportedTypes": [
@@ -126,7 +126,7 @@
     {
       "id": "mum_vidmody",
       "name": "Vidmody",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_vidmody.js",
       "supportedTypes": [
@@ -138,9 +138,69 @@
     {
       "id": "mum_webteizle",
       "name": "Webteİzle",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_webteizle.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mum_sinemacx",
+      "name": "SinemaCX",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_sinemacx.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mum_sinewix",
+      "name": "SineWix",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_sinewix.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mum_dizimom",
+      "name": "DiziMom",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_dizimom.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mum_yabancidizi",
+      "name": "YabancıDizi",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_yabancidizi.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mum_diziboxizle",
+      "name": "DiziBoxİzle",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_diziboxizle.js",
       "supportedTypes": [
         "movie",
         "tv"

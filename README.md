@@ -1,6 +1,6 @@
 # MUM Plugins
 
-Kişisel MUM projesi için Anthology v1.8.39 tabanlı Nuvio Desktop film/dizi eklenti deposu. İlk geliştirme sürümü: **0.1.0**. Windows hedeflenir; Android TV testi yapılmamıştır.
+Kişisel MUM projesi için Anthology v1.8.39 tabanlı Nuvio Desktop film/dizi eklenti deposu. Güncel geliştirme sürümü: **0.1.2**. Windows hedeflenir; Android TV testi yapılmamıştır.
 
 Kaynak bulunması, HTTP 200 alınması veya bir HLS parçasının indirilmesi **oynatma doğrulaması değildir**. Son canlı kontrollerde DiziYou (Breaking Bad S5E16) ve FilmModu (Game of Thrones S1E1) birer kaynak döndürdü; Windows Nuvio oynatması doğrulanmadı.
 
@@ -44,6 +44,7 @@ Aşağıdaki bilgiler kullanıcının **Windows Nuvio + Anthology 1.8.39** testl
 | Sağlayıcı | Kaynak araması | Oynatma |
 |---|---|---|
 | Anthology M3U, DDiziBox, HDFilmDelisi, HDFilmIzle, SetFilmIzle, SezonlukDizi, Vidlink, Vidmody, Webteizle | Kaynak dönmüş | Doğrulanmadı |
+| SinemaCX, SineWix, DiziMom, YabancıDizi, DiziBoxİzle | Yeni eklendi; canlı sorgu yapılmadı | Doğrulanmadı |
 | DiziYou | Güncel `.love` akışıyla kaynak bulundu | Oynatma doğrulanmadı |
 | FilmModu | GOT S1E1 kaynak bulundu; TV desteği eklendi | Oynatma doğrulanmadı |
 | HDFilmCehennemi | Kullanıcı testinde boş | Doğrulanmadı |

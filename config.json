@@ -1,6 +1,6 @@
 {
   "name": "MUM Plugins",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "urls": {
     "m3u": {
       "film_base": "https://raw.githubusercontent.com/mooncrown04/m3ubirlestir/main/nuvio_parcalari/",
@@ -18,6 +18,15 @@
       },
       "sezonlukdizi": {
         "base": "https://sezonlukdizi.cc"
+      },
+      "dizimom": {
+        "base": "https://ddizimom.net"
+      },
+      "yabancidizi": {
+        "base": "https://yabancidizi.news"
+      },
+      "diziboxizle": {
+        "base": "https://diziboxizle.com"
       }
     },
     "movies": {
@@ -46,6 +55,14 @@
       },
       "webteizle": {
         "base": "https://webteizle.info"
+      },
+      "sinemacx": {
+        "base": "https://sinemacc.com",
+        "player": "https://player.filmizle.in"
+      },
+      "sinewix": {
+        "api_base": "https://ydfvfdizipanel.ru/public/api",
+        "panel_base": "https://ydfvfdizipanel.ru"
       }
     },
     "meta_resolvers": {

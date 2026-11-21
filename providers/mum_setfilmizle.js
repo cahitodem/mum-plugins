@@ -346,12 +346,104 @@ var require_matching = __commonJS({
   }
 });
 
+// src/shared/http.js
+var require_http = __commonJS({
+  "src/shared/http.js"(exports2, module2) {
+    var DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    function timeoutSignal(ms) {
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        return AbortSignal.timeout(ms);
+      }
+      var controller = new AbortController();
+      setTimeout(function() {
+        controller.abort(new Error("TIMEOUT"));
+      }, ms);
+      return controller.signal;
+    }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
+    function fetchWithTimeout(url, options, ms) {
+      ms = ms || 8e3;
+      options = options || {};
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
+      }
+      if (!options.headers) {
+        options.headers = {};
+      }
+      if (!options.headers["User-Agent"] && !options.headers["user-agent"]) {
+        options.headers["User-Agent"] = DEFAULT_UA;
+      }
+      return fetch(url, options);
+    }
+    module2.exports = {
+      DEFAULT_UA,
+      timeoutSignal,
+      combineSignals,
+      fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
+    };
+  }
+});
+
 // src/setfilmizle/index.js
 var require_setfilmizle = __commonJS({
   "src/setfilmizle/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
     var { pickBestCandidate } = require_matching();
+    var { fetchWithTimeout } = require_http();
+    var { ProviderError } = require_errors();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -372,17 +464,7 @@ var require_setfilmizle = __commonJS({
       "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
       "Referer": BASE_URL + "/"
     };
-    function fetchWithTimeout(url, options, ms) {
-      var opts = options || {};
-      try {
-        if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
-          opts.signal = AbortSignal.timeout(ms || 15e3);
-        }
-      } catch (e) {
-      }
-      return fetch(url, opts);
-    }
-    function resolveTmdbInfo(id, mediaType) {
+    function resolveTmdbInfo(id, mediaType, signal) {
       return __async(this, null, function* () {
         try {
           var cleanId = String(id || "").trim();
@@ -392,7 +474,7 @@ var require_setfilmizle = __commonJS({
           var origTitle = "";
           var year = "";
           if (cleanId.startsWith("tt")) {
-            var findRes = yield fetchWithTimeout("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", {}, 1e4);
+            var findRes = yield fetchWithTimeout("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", { signal }, 8e3);
             if (findRes.ok) {
               var fd = yield findRes.json();
               var match = mediaType === "tv" || mediaType === "series" ? fd.tv_results && fd.tv_results[0] : fd.movie_results && fd.movie_results[0];
@@ -408,7 +490,7 @@ var require_setfilmizle = __commonJS({
           } else {
             numericId = cleanId;
             var type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
-            var tRes = yield fetchWithTimeout("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", {}, 1e4);
+            var tRes = yield fetchWithTimeout("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", { signal }, 8e3);
             if (tRes.ok) {
               var td = yield tRes.json();
               title = td.name || td.title || "";
@@ -419,7 +501,7 @@ var require_setfilmizle = __commonJS({
           }
           return { title, origTitle, numericId, year };
         } catch (e) {
-          return { title: "", origTitle: "", numericId: id };
+          return { title: "", origTitle: "", numericId: id, year: "" };
         }
       });
     }
@@ -454,14 +536,18 @@ var require_setfilmizle = __commonJS({
       }
       return out;
     }
-    function searchSite(query) {
+    function searchSite(query, signal) {
       return __async(this, null, function* () {
         try {
-          var res = yield fetchWithTimeout(BASE_URL + "/?s=" + encodeURIComponent(query), { headers: HEADERS }, 15e3);
-          if (!res.ok) return [];
+          var res = yield fetchWithTimeout(BASE_URL + "/?s=" + encodeURIComponent(query), { headers: HEADERS, signal }, 8e3);
+          if (!res.ok) {
+            if (res.status === 403) throw new ProviderError("HTTP_BLOCKED", "SetFilmIzle 403 Forbidden", "search", 403);
+            return [];
+          }
           var html = yield res.text();
           return parseCards(html);
         } catch (e) {
+          if (e && e.name === "ProviderError") throw e;
           return [];
         }
       });
@@ -838,13 +924,16 @@ var require_setfilmizle = __commonJS({
         }
       });
     }
-    function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
+    function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
       return __async(this, null, function* () {
+        var signal = options && options.signal;
         try {
           if (typeof tmdbIdOrArgs === "object" && tmdbIdOrArgs !== null) {
             mediaType = tmdbIdOrArgs.type || mediaType;
             seasonNum = tmdbIdOrArgs.season || seasonNum;
             episodeNum = tmdbIdOrArgs.episode || episodeNum;
+            options = tmdbIdOrArgs.options || options;
+            signal = options && options.signal;
             tmdbIdOrArgs = tmdbIdOrArgs.id;
           }
           if (typeof tmdbIdOrArgs === "string" && tmdbIdOrArgs.indexOf(":") !== -1 && !tmdbIdOrArgs.startsWith("setfilmizle:")) {
@@ -870,19 +959,23 @@ var require_setfilmizle = __commonJS({
               var target = vids.find(function(v) {
                 return v.season === (parseInt(seasonNum) || 1) && v.episode === (parseInt(episodeNum) || 1);
               }) || vids[0];
-              if (target) return yield getStreams(target.id);
+              if (target) return yield getStreams(target.id, mediaType, seasonNum, episodeNum, options);
               return yield extractStreamsFromContentPage(href2);
             }
             return yield extractStreamsFromContentPage(href2);
           }
           var season = parseInt(seasonNum) || 1;
           var episode = parseInt(episodeNum) || 1;
-          var info = yield resolveTmdbInfo(tmdbIdOrArgs, mediaType);
+          var info = yield resolveTmdbInfo(tmdbIdOrArgs, mediaType, signal);
           var searchTitles = [info.title, info.origTitle].filter(Boolean);
-          if (searchTitles.length === 0) return [];
+          if (searchTitles.length === 0) {
+            throw new ProviderError("TMDB_ERROR", "TMDB arama bilgisi al\u0131namad\u0131", "tmdb");
+          }
+          var hadCards = false;
           for (var t = 0; t < searchTitles.length; t++) {
-            var cards = yield searchSite(searchTitles[t]);
+            var cards = yield searchSite(searchTitles[t], signal);
             if (!cards || cards.length === 0) continue;
+            hadCards = true;
             var wantTv = mediaType === "tv" || mediaType === "series";
             var filtered = cards.filter(function(c) {
               return wantTv ? c.isTv : !c.isTv;
@@ -900,7 +993,7 @@ var require_setfilmizle = __commonJS({
                 return v.season === season && v.episode === episode;
               });
               if (tgt) {
-                var epStreams = yield getStreams(tgt.id);
+                var epStreams = yield getStreams(tgt.id, mediaType, season, episode, options);
                 if (epStreams.length > 0) return epStreams;
               }
               if (streams.length > 0) return streams;
@@ -909,8 +1002,14 @@ var require_setfilmizle = __commonJS({
               if (mStreams.length > 0) return mStreams;
             }
           }
+          if (hadCards) {
+            throw new ProviderError("NO_MATCH", "SetFilmIzle e\u015Fle\u015Fen aday bulamad\u0131", "matching");
+          }
           return [];
         } catch (e2) {
+          if (e2 && (e2.name === "ProviderError" || e2.name === "AbortError" || e2.message === "TIMEOUT")) {
+            throw e2;
+          }
           return [];
         }
       });
@@ -966,6 +1065,7 @@ var require_adapter = __commonJS({
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -985,13 +1085,20 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
+            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
-                return provider2.getStreams(id, type, season, episode);
+                return provider2.getStreams(id, type, season, episode, callOpts);
               }),
               new Promise(function(_, reject) {
                 timer = setTimeout(function() {
                   timedOut = true;
+                  if (abortCtrl) {
+                    try {
+                      abortCtrl.abort(new Error("TIMEOUT"));
+                    } catch (_2) {
+                    }
+                  }
                   reject(new Error("TIMEOUT"));
                 }, limit);
               })
@@ -1001,8 +1108,26 @@ var require_adapter = __commonJS({
             record.rejected = normalized.invalid;
             record.status = record.count ? "sources-found" : normalized.invalid ? "invalid-results" : "empty";
             return normalized.streams;
-          } catch (_) {
-            record.status = timedOut ? "timeout" : "error";
+          } catch (err) {
+            if (abortCtrl && !abortCtrl.signal.aborted) {
+              try {
+                abortCtrl.abort();
+              } catch (_) {
+              }
+            }
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+              record.status = "timeout";
+            } else if (err && err.name === "ProviderError") {
+              if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";
+              else if (err.code === "NO_MATCH") record.status = "no-match";
+              else if (err.code === "PARSE_ERROR") record.status = "parse-error";
+              else if (err.code === "TMDB_ERROR") record.status = "tmdb-error";
+              else record.status = "error";
+              if (err.stage) record.stage = err.stage;
+              if (err.code) record.reason = String(err.code).toLowerCase();
+            } else {
+              record.status = "error";
+            }
             return [];
           } finally {
             if (timer !== void 0) clearTimeout(timer);

@@ -214,8 +214,8 @@ var require_diziyou = __commonJS({
       return _cfgReady;
     }
     var cheerio = require("cheerio-without-node-native");
-    var BASE_URL = "https://www.diziyou.one";
-    var STORAGE_URL = "https://storage.diziyou.one";
+    var BASE_URL = "https://www.diziyou.love";
+    var STORAGE_URL = "https://storage.diziyou.love";
     var TMDB_API_KEY = "500330721680edb6d5f7f12ba7cd9023";
     var WORKING_HEADERS = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -477,6 +477,7 @@ var require_adapter = __commonJS({
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -496,13 +497,20 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
+            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
-                return provider2.getStreams(id, type, season, episode);
+                return provider2.getStreams(id, type, season, episode, callOpts);
               }),
               new Promise(function(_, reject) {
                 timer = setTimeout(function() {
                   timedOut = true;
+                  if (abortCtrl) {
+                    try {
+                      abortCtrl.abort(new Error("TIMEOUT"));
+                    } catch (_2) {
+                    }
+                  }
                   reject(new Error("TIMEOUT"));
                 }, limit);
               })
@@ -512,8 +520,26 @@ var require_adapter = __commonJS({
             record.rejected = normalized.invalid;
             record.status = record.count ? "sources-found" : normalized.invalid ? "invalid-results" : "empty";
             return normalized.streams;
-          } catch (_) {
-            record.status = timedOut ? "timeout" : "error";
+          } catch (err) {
+            if (abortCtrl && !abortCtrl.signal.aborted) {
+              try {
+                abortCtrl.abort();
+              } catch (_) {
+              }
+            }
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+              record.status = "timeout";
+            } else if (err && err.name === "ProviderError") {
+              if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";
+              else if (err.code === "NO_MATCH") record.status = "no-match";
+              else if (err.code === "PARSE_ERROR") record.status = "parse-error";
+              else if (err.code === "TMDB_ERROR") record.status = "tmdb-error";
+              else record.status = "error";
+              if (err.stage) record.stage = err.stage;
+              if (err.code) record.reason = String(err.code).toLowerCase();
+            } else {
+              record.status = "error";
+            }
             return [];
           } finally {
             if (timer !== void 0) clearTimeout(timer);

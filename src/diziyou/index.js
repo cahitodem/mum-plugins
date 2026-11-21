@@ -16,15 +16,15 @@ function cfgReady() {
 
 /**
  * Anthology - DiziYou Provider
- * diziyou.one arşivi ve storage.diziyou.one üzerinden
+ * diziyou.love arşivi ve storage.diziyou.love üzerinden
  * doğrudan play.m3u8 HLS akışları ve Türkçe VTT altyazıları sunar.
  */
 
 var cheerio = require('cheerio-without-node-native');
 
 const PROVIDER_NAME = 'DiziYou';
-var BASE_URL = 'https://www.diziyou.one'; 
-var STORAGE_URL = 'https://storage.diziyou.one';
+var BASE_URL = 'https://www.diziyou.love'; 
+var STORAGE_URL = 'https://storage.diziyou.love';
 const TMDB_API_KEY = '500330721680edb6d5f7f12ba7cd9023';
 
 const WORKING_HEADERS = {

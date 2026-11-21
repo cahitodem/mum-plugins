@@ -152,15 +152,48 @@ var require_http = __commonJS({
       }
       var controller = new AbortController();
       setTimeout(function() {
-        controller.abort();
+        controller.abort(new Error("TIMEOUT"));
       }, ms);
       return controller.signal;
     }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
     function fetchWithTimeout(url, options, ms) {
-      ms = ms || 1e4;
+      ms = ms || 8e3;
       options = options || {};
-      if (!options.signal) {
-        options.signal = timeoutSignal(ms);
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
       }
       if (!options.headers) {
         options.headers = {};
@@ -173,7 +206,28 @@ var require_http = __commonJS({
     module2.exports = {
       DEFAULT_UA,
       timeoutSignal,
+      combineSignals,
       fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
     };
   }
 });
@@ -182,7 +236,8 @@ var require_http = __commonJS({
 var require_hdfilmcehennemi = __commonJS({
   "src/hdfilmcehennemi/index.js"(exports2, module2) {
     var { loadConfig, val, wrapAll } = require_config2();
-    var { timeoutSignal } = require_http();
+    var { timeoutSignal, fetchWithTimeout } = require_http();
+    var { ProviderError } = require_errors();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -373,14 +428,6 @@ var require_hdfilmcehennemi = __commonJS({
       "tt1572168": "black-ransom-2010"
     };
     var SLUG_CACHE = /* @__PURE__ */ new Map();
-    function fetchWithTimeout(url, options, ms) {
-      var opts = Object.assign({}, options || {});
-      try {
-        if (!opts.signal) opts.signal = timeoutSignal(ms || 1e4);
-      } catch (e) {
-      }
-      return fetch(url, opts);
-    }
     function isAccessBlocked(res) {
       return !!res && res.status === 403;
     }
@@ -498,7 +545,9 @@ var require_hdfilmcehennemi = __commonJS({
           if (!cand) continue;
           try {
             var res = yield fetchWithTimeout(BASE_URL + "/" + cand + "/", { headers: HEADERS }, 5e3);
-            if (isAccessBlocked(res)) return null;
+            if (isAccessBlocked(res)) {
+              throw new ProviderError("HTTP_BLOCKED", "HDFilmCehennemi 403 Forbidden", "search", 403);
+            }
             if (res.status === 200) {
               var html = yield res.text();
               var imdbMatch = html.match(/https:\/\/(?:www\.)?imdb\.com\/title\/(tt\d+)/i);
@@ -708,6 +757,9 @@ var require_hdfilmcehennemi = __commonJS({
           });
           return streams;
         } catch (e) {
+          if (e && (e.name === "ProviderError" || e.name === "AbortError" || e.message === "TIMEOUT")) {
+            throw e;
+          }
           return [];
         }
       });
@@ -880,6 +932,7 @@ var require_adapter = __commonJS({
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -899,13 +952,20 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
+            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
-                return provider2.getStreams(id, type, season, episode);
+                return provider2.getStreams(id, type, season, episode, callOpts);
               }),
               new Promise(function(_, reject) {
                 timer = setTimeout(function() {
                   timedOut = true;
+                  if (abortCtrl) {
+                    try {
+                      abortCtrl.abort(new Error("TIMEOUT"));
+                    } catch (_2) {
+                    }
+                  }
                   reject(new Error("TIMEOUT"));
                 }, limit);
               })
@@ -915,8 +975,26 @@ var require_adapter = __commonJS({
             record.rejected = normalized.invalid;
             record.status = record.count ? "sources-found" : normalized.invalid ? "invalid-results" : "empty";
             return normalized.streams;
-          } catch (_) {
-            record.status = timedOut ? "timeout" : "error";
+          } catch (err) {
+            if (abortCtrl && !abortCtrl.signal.aborted) {
+              try {
+                abortCtrl.abort();
+              } catch (_) {
+              }
+            }
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+              record.status = "timeout";
+            } else if (err && err.name === "ProviderError") {
+              if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";
+              else if (err.code === "NO_MATCH") record.status = "no-match";
+              else if (err.code === "PARSE_ERROR") record.status = "parse-error";
+              else if (err.code === "TMDB_ERROR") record.status = "tmdb-error";
+              else record.status = "error";
+              if (err.stage) record.stage = err.stage;
+              if (err.code) record.reason = String(err.code).toLowerCase();
+            } else {
+              record.status = "error";
+            }
             return [];
           } finally {
             if (timer !== void 0) clearTimeout(timer);

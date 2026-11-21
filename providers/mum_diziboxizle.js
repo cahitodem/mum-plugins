@@ -142,10 +142,255 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/matching.js
+var require_matching = __commonJS({
+  "src/shared/matching.js"(exports2, module2) {
+    var STOP_WORDS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "with",
+      "by",
+      "bir",
+      "ve",
+      "ile",
+      "icin",
+      "de",
+      "da",
+      "izle",
+      "dizi",
+      "dizisi",
+      "film",
+      "filmi",
+      "bolum",
+      "sezon",
+      "hd",
+      "full"
+    ]);
+    function normalizeText(str) {
+      if (!str) return "";
+      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function tokenize(str) {
+      var norm = normalizeText(str);
+      if (!norm) return [];
+      return norm.split(/\s+/).filter(function(w) {
+        return w.length > 1 && !STOP_WORDS.has(w);
+      });
+    }
+    function cleanSlug(slug) {
+      if (!slug) return "";
+      try {
+        var last = String(slug).split("/").filter(Boolean).pop() || "";
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+      } catch (_) {
+        return String(slug).replace(/-/g, " ");
+      }
+    }
+    function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candYear, options) {
+      var opts = options || {};
+      var minCoverage = opts.minCoverage !== void 0 ? opts.minCoverage : 0.75;
+      var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
+      var tNorm = normalizeText(targetTitle);
+      var cNorm = normalizeText(candTitle);
+      var sClean = cleanSlug(candSlug);
+      var sNorm = normalizeText(sClean);
+      if (!tNorm || !cNorm && !sNorm) {
+        return { matched: false, score: 0, reason: "empty_input" };
+      }
+      var targetY = parseInt(targetYear, 10);
+      var candY = parseInt(candYear, 10);
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var diff = Math.abs(targetY - candY);
+        if (diff > 1) {
+          return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (cNorm === tNorm || sNorm === tNorm) {
+        var exactScore = 100;
+        if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+          var yDiff = Math.abs(targetY - candY);
+          if (yDiff === 0) exactScore += 25;
+          else if (yDiff === 1) exactScore += 10;
+        }
+        return { matched: true, score: exactScore, reason: "exact_title_match" };
+      }
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokens = new Set(cTokensList);
+      var matchCount = 0;
+      for (var i = 0; i < tTokens.length; i++) {
+        if (cTokens.has(tTokens[i])) {
+          matchCount++;
+        }
+      }
+      var coverage = tTokens.length > 0 ? matchCount / tTokens.length : 0;
+      if (coverage < minCoverage) {
+        return {
+          matched: false,
+          score: 0,
+          reason: "low_coverage_" + Math.round(coverage * 100) + "pct"
+        };
+      }
+      var score = coverage * 70;
+      var candUniqueTokens = new Set(tokenize(candTitle));
+      var extraTokens = 0;
+      candUniqueTokens.forEach(function(tok) {
+        if (tTokens.indexOf(tok) === -1) extraTokens++;
+      });
+      if (extraTokens > 0) {
+        score -= Math.min(20, extraTokens * 5);
+      }
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var yDiff2 = Math.abs(targetY - candY);
+        if (yDiff2 === 0) score += 20;
+        else if (yDiff2 === 1) score += 10;
+      }
+      if (score >= minScore) {
+        return { matched: true, score, reason: "token_match" };
+      }
+      return { matched: false, score, reason: "score_below_threshold" };
+    }
+    function pickBestCandidate(candidates, targetTitle, targetYear, options) {
+      if (!Array.isArray(candidates) || candidates.length === 0) return null;
+      if (!targetTitle) return null;
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (!cand) continue;
+        var cTitle = cand.title || cand.name || cand.baslik || cand.orijinalBaslik || "";
+        var cSlug = cand.slug || cand.url || cand.href || "";
+        var cYear = cand.year || cand.yil || "";
+        if (!cYear) {
+          var ym = (String(cTitle) + " " + String(cSlug) + " " + String(cand.meta || "")).match(/\b(19\d\d|20\d\d)\b/);
+          if (ym) cYear = ym[1];
+        }
+        var res = calculateMatchScore(targetTitle, targetYear, cTitle, cSlug, cYear, options);
+        if (res.matched && res.score > bestScore) {
+          bestScore = res.score;
+          best = cand;
+        }
+      }
+      return best;
+    }
+    module2.exports = {
+      STOP_WORDS,
+      normalizeText,
+      tokenize,
+      cleanSlug,
+      calculateMatchScore,
+      pickBestCandidate
+    };
+  }
+});
+
+// src/shared/http.js
+var require_http = __commonJS({
+  "src/shared/http.js"(exports2, module2) {
+    var DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    function timeoutSignal(ms) {
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        return AbortSignal.timeout(ms);
+      }
+      var controller = new AbortController();
+      setTimeout(function() {
+        controller.abort(new Error("TIMEOUT"));
+      }, ms);
+      return controller.signal;
+    }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
+    function fetchWithTimeout(url, options, ms) {
+      ms = ms || 8e3;
+      options = options || {};
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
+      }
+      if (!options.headers) {
+        options.headers = {};
+      }
+      if (!options.headers["User-Agent"] && !options.headers["user-agent"]) {
+        options.headers["User-Agent"] = DEFAULT_UA;
+      }
+      return fetch(url, options);
+    }
+    module2.exports = {
+      DEFAULT_UA,
+      timeoutSignal,
+      combineSignals,
+      fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
+    };
+  }
+});
+
 // src/diziboxizle/index.js
 var require_diziboxizle = __commonJS({
   "src/diziboxizle/index.js"(exports2, module2) {
     var { loadConfig, val, wrapAll } = require_config2();
+    var { pickBestCandidate } = require_matching();
+    var { fetchWithTimeout, timeoutSignal } = require_http();
+    var { ProviderError } = require_errors();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -327,16 +572,6 @@ var require_diziboxizle = __commonJS({
       "young-sherlock": "Young Sherlock",
       "zombieverse": "Zombieverse"
     };
-    function timeoutSignal(ms) {
-      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
-        return AbortSignal.timeout(ms);
-      }
-      var controller = new AbortController();
-      setTimeout(function() {
-        controller.abort();
-      }, ms);
-      return controller.signal;
-    }
     function ultraClean(str) {
       if (!str) return "";
       return str.toString().toLowerCase().replace(/[ıİ]/g, "i").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[çÇ]/g, "c").replace(/[âîûÂÎÛ]/g, function(c) {
@@ -349,16 +584,17 @@ var require_diziboxizle = __commonJS({
         return String.fromCharCode(dec);
       }).trim();
     }
-    function resolveTmdbInfo(id, mediaType) {
+    function resolveTmdbInfo(id, mediaType, signal) {
       return __async(this, null, function* () {
         try {
           var cleanId = String(id || "").trim();
           if (cleanId.indexOf(":") !== -1) cleanId = cleanId.split(":")[0];
           var numericId = null;
           var titles = [];
+          var year = "";
           if (cleanId.startsWith("tt")) {
             var findUrl = "https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id";
-            var findRes = yield fetch(findUrl, { signal: timeoutSignal(6e3) });
+            var findRes = yield fetchWithTimeout(findUrl, { signal }, 6e3);
             if (findRes.ok) {
               var findData = yield findRes.json();
               var item = mediaType === "tv" || mediaType === "series" ? findData.tv_results && findData.tv_results[0] : findData.movie_results && findData.movie_results[0];
@@ -368,6 +604,8 @@ var require_diziboxizle = __commonJS({
                 if (item.title) titles.push(item.title);
                 if (item.original_name && titles.indexOf(item.original_name) === -1) titles.push(item.original_name);
                 if (item.original_title && titles.indexOf(item.original_title) === -1) titles.push(item.original_title);
+                var rd0 = item.release_date || item.first_air_date || "";
+                if (rd0) year = rd0.split("-")[0];
               }
             }
           } else if (/^\d+$/.test(cleanId)) {
@@ -375,31 +613,35 @@ var require_diziboxizle = __commonJS({
           }
           if (numericId) {
             var type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
-            var trRes = yield fetch("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", { signal: timeoutSignal(6e3) });
+            var trRes = yield fetchWithTimeout("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", { signal }, 6e3);
             if (trRes.ok) {
               var trData = yield trRes.json();
               if (trData.name && titles.indexOf(trData.name) === -1) titles.push(trData.name);
               if (trData.title && titles.indexOf(trData.title) === -1) titles.push(trData.title);
               if (trData.original_name && titles.indexOf(trData.original_name) === -1) titles.push(trData.original_name);
               if (trData.original_title && titles.indexOf(trData.original_title) === -1) titles.push(trData.original_title);
+              var rd1 = trData.release_date || trData.first_air_date || "";
+              if (rd1 && !year) year = rd1.split("-")[0];
             }
-            var enRes = yield fetch("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=en-US", { signal: timeoutSignal(6e3) });
+            var enRes = yield fetchWithTimeout("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=en-US", { signal }, 6e3);
             if (enRes.ok) {
               var enData = yield enRes.json();
               if (enData.name && titles.indexOf(enData.name) === -1) titles.push(enData.name);
               if (enData.title && titles.indexOf(enData.title) === -1) titles.push(enData.title);
               if (enData.original_name && titles.indexOf(enData.original_name) === -1) titles.push(enData.original_name);
               if (enData.original_title && titles.indexOf(enData.original_title) === -1) titles.push(enData.original_title);
+              var rd2 = enData.release_date || enData.first_air_date || "";
+              if (rd2 && !year) year = rd2.split("-")[0];
             }
           }
           if (!titles.length && cleanId) titles.push(cleanId);
-          return { titles, numericId };
+          return { titles, numericId, year };
         } catch (e) {
-          return { titles: [String(id || "")], numericId: null };
+          return { titles: [String(id || "")], numericId: null, year: "" };
         }
       });
     }
-    function searchSeries(query) {
+    function searchSeries(query, signal) {
       return __async(this, null, function* () {
         try {
           var cleanQ = ultraClean(query);
@@ -411,46 +653,51 @@ var require_diziboxizle = __commonJS({
               var sTitle = SERIES_MAP[slug];
               var sClean = ultraClean(sTitle);
               var slugClean = ultraClean(slug);
-              if (sClean === cleanQ || slugClean === cleanQ || sClean.indexOf(cleanQ) !== -1 || cleanQ.indexOf(sClean) !== -1) {
+              if (sClean === cleanQ || slugClean === cleanQ) {
+                return [{ slug, title: sTitle, url: BASE_URL + "/" + slug + "/" }];
+              }
+              if (sClean.indexOf(cleanQ) !== -1 || cleanQ.indexOf(sClean) !== -1) {
                 seenSlugs[slug] = true;
                 results.push({ slug, title: sTitle, url: BASE_URL + "/" + slug + "/" });
               }
             }
           }
-          try {
-            var wpCatUrl = BASE_URL + "/wp-json/wp/v2/categories?search=" + encodeURIComponent(query);
-            var wpRes = yield fetch(wpCatUrl, { headers: HEADERS, signal: timeoutSignal(6e3) });
-            if (wpRes.ok) {
-              var wpCats = yield wpRes.json();
-              if (Array.isArray(wpCats)) {
-                for (var i = 0; i < wpCats.length; i++) {
-                  var c = wpCats[i];
-                  if (c.slug && !seenSlugs[c.slug]) {
-                    seenSlugs[c.slug] = true;
-                    results.push({ slug: c.slug, title: decodeHtmlEntities(c.name || c.slug), url: BASE_URL + "/" + c.slug + "/" });
-                  }
-                }
+          var wpCatUrl = BASE_URL + "/wp-json/wp/v2/categories?search=" + encodeURIComponent(query);
+          var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
+          var fetchOpts = { headers: HEADERS, signal };
+          var pCats = fetchWithTimeout(wpCatUrl, fetchOpts, 6e3).then(function(r) {
+            return r.ok ? r.json() : [];
+          }).catch(function() {
+            return [];
+          });
+          var pHtml = fetchWithTimeout(searchUrl, fetchOpts, 6e3).then(function(r) {
+            return r.ok ? r.text() : "";
+          }).catch(function() {
+            return "";
+          });
+          var pair = yield Promise.all([pCats, pHtml]);
+          var wpCats = pair[0];
+          var sHtml = pair[1];
+          if (Array.isArray(wpCats)) {
+            for (var i = 0; i < wpCats.length; i++) {
+              var c = wpCats[i];
+              if (c.slug && !seenSlugs[c.slug]) {
+                seenSlugs[c.slug] = true;
+                results.push({ slug: c.slug, title: decodeHtmlEntities(c.name || c.slug), url: BASE_URL + "/" + c.slug + "/" });
               }
             }
-          } catch (e) {
           }
-          try {
-            var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
-            var sRes = yield fetch(searchUrl, { headers: HEADERS, signal: timeoutSignal(6e3) });
-            if (sRes.ok) {
-              var sHtml = yield sRes.text();
-              var linkRegex = /<div class="categorytitle"[^>]*>\s*<a href="https:\/\/diziboxizle\.com\/([a-z0-9-]+)\/"[^>]*>([^<]+)<\/a>/gi;
-              var lm;
-              while ((lm = linkRegex.exec(sHtml)) !== null) {
-                var hSlug = lm[1];
-                var hTitle = decodeHtmlEntities(lm[2]);
-                if (!seenSlugs[hSlug]) {
-                  seenSlugs[hSlug] = true;
-                  results.push({ slug: hSlug, title: hTitle, url: BASE_URL + "/" + hSlug + "/" });
-                }
+          if (sHtml) {
+            var linkRegex = /<div class="categorytitle"[^>]*>\s*<a href="(?:https?:\/\/[^\/]+)?\/([a-z0-9-]+)\/"[^>]*>([^<]+)<\/a>/gi;
+            var lm;
+            while ((lm = linkRegex.exec(sHtml)) !== null) {
+              var hSlug = lm[1];
+              var hTitle = decodeHtmlEntities(lm[2]);
+              if (!seenSlugs[hSlug]) {
+                seenSlugs[hSlug] = true;
+                results.push({ slug: hSlug, title: hTitle, url: BASE_URL + "/" + hSlug + "/" });
               }
             }
-          } catch (e) {
           }
           return results;
         } catch (e) {
@@ -458,31 +705,18 @@ var require_diziboxizle = __commonJS({
         }
       });
     }
-    function pickBestSeries(candidates, targetTitle) {
+    function pickBestSeries(candidates, targetTitle, targetYear) {
       if (!candidates || !candidates.length) return null;
-      var cleanTarget = ultraClean(targetTitle);
-      for (var i = 0; i < candidates.length; i++) {
-        var cClean = ultraClean(candidates[i].title);
-        var slugClean = ultraClean(candidates[i].slug);
-        if (cClean === cleanTarget || slugClean === cleanTarget) {
-          return candidates[i];
-        }
-      }
-      for (var j = 0; j < candidates.length; j++) {
-        var candClean = ultraClean(candidates[j].title);
-        if (candClean && cleanTarget && (candClean.indexOf(cleanTarget) !== -1 || cleanTarget.indexOf(candClean) !== -1)) {
-          return candidates[j];
-        }
-      }
-      return candidates[0];
+      return pickBestCandidate(candidates, targetTitle, targetYear, { minCoverage: 0.75, minScore: 50 });
     }
     function parseEpisodes(detailHtml) {
       var episodes = [];
       var seen = {};
-      var epRegex = /<a[^>]+href="(https:\/\/diziboxizle\.com\/[a-z0-9-]+-(?:[0-9]+-sezon-[0-9]+-bolum|[0-9]+-bolum)\/)"[^>]*>([\s\S]*?)<\/a>/gi;
+      var epRegex = /<a[^>]+href="((?:https?:\/\/[^\/]+)?\/[a-z0-9-]+-(?:[0-9]+-sezon-[0-9]+-bolum|[0-9]+-bolum)\/)"[^>]*>([\s\S]*?)<\/a>/gi;
       var m;
       while ((m = epRegex.exec(detailHtml)) !== null) {
-        var url = m[1];
+        var rawUrl = m[1];
+        var url = rawUrl.startsWith("http") ? rawUrl : BASE_URL + (rawUrl.startsWith("/") ? "" : "/") + rawUrl;
         var rawText = decodeHtmlEntities(m[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
         var season = 1;
         var episode = 1;
@@ -624,10 +858,10 @@ var require_diziboxizle = __commonJS({
         }
       });
     }
-    function fetchEpisodeMirrors(episodeUrl) {
+    function fetchEpisodeMirrors(episodeUrl, signal) {
       return __async(this, null, function* () {
         try {
-          var res = yield fetch(episodeUrl, { headers: HEADERS, signal: timeoutSignal(8e3) });
+          var res = yield fetchWithTimeout(episodeUrl, { headers: HEADERS, signal }, 8e3);
           if (!res.ok) return [];
           var html = yield res.text();
           var iframes = [];
@@ -769,16 +1003,17 @@ var require_diziboxizle = __commonJS({
         }
       });
     }
-    function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
       return __async(this, null, function* () {
+        var signal = options && options.signal;
         try {
           var isTv = mediaType === "tv" || mediaType === "series";
           if (typeof tmdbId === "object" && tmdbId && tmdbId.id) {
-            return getStreams(tmdbId.id, tmdbId.type || mediaType, tmdbId.season || seasonNum, tmdbId.episode || episodeNum);
+            return getStreams(tmdbId.id, tmdbId.type || mediaType, tmdbId.season || seasonNum, tmdbId.episode || episodeNum, options);
           }
           if (typeof tmdbId === "string" && tmdbId.startsWith("diziboxizle:ep:")) {
             var epSlug = tmdbId.replace("diziboxizle:ep:", "");
-            return yield fetchEpisodeMirrors(BASE_URL + "/" + epSlug + "/");
+            return yield fetchEpisodeMirrors(BASE_URL + "/" + epSlug + "/", signal);
           }
           var finalSeason = parseInt(seasonNum) || 1;
           var finalEpisode = parseInt(episodeNum) || 1;
@@ -788,7 +1023,7 @@ var require_diziboxizle = __commonJS({
               var matchedV = showMeta.meta.videos.find(function(v) {
                 return v.season === finalSeason && v.episode === finalEpisode;
               }) || showMeta.meta.videos[0];
-              return yield getStreams(matchedV.id, mediaType, finalSeason, finalEpisode);
+              return yield getStreams(matchedV.id, mediaType, finalSeason, finalEpisode, options);
             }
           }
           if (typeof tmdbId === "string" && tmdbId.indexOf(":") !== -1) {
@@ -800,27 +1035,41 @@ var require_diziboxizle = __commonJS({
               if (!isNaN(e)) finalEpisode = e;
             }
           }
-          var info = yield resolveTmdbInfo(tmdbId, mediaType);
-          if (!info.titles || !info.titles.length) return [];
+          var info = yield resolveTmdbInfo(tmdbId, mediaType, signal);
+          if (!info.titles || !info.titles.length) {
+            throw new ProviderError("TMDB_ERROR", "TMDB arama bilgisi al\u0131namad\u0131", "tmdb");
+          }
           var matchedSeries = null;
           for (var i = 0; i < info.titles.length; i++) {
             var q = info.titles[i];
-            var list = yield searchSeries(q);
+            var list = yield searchSeries(q, signal);
             if (list && list.length > 0) {
-              matchedSeries = pickBestSeries(list, q);
+              matchedSeries = pickBestSeries(list, q, info.year);
               if (matchedSeries) break;
             }
           }
-          if (!matchedSeries) return [];
-          var sRes = yield fetch(matchedSeries.url, { headers: HEADERS, signal: timeoutSignal(8e3) });
-          if (!sRes.ok) return [];
+          if (!matchedSeries) {
+            throw new ProviderError("NO_MATCH", "DiziBox\u0130zle \xFCzerinde e\u015Fle\u015Fen dizi bulunamad\u0131", "matching");
+          }
+          var sRes = yield fetchWithTimeout(matchedSeries.url, { headers: HEADERS, signal }, 8e3);
+          if (!sRes.ok) {
+            if (sRes.status === 403) throw new ProviderError("HTTP_BLOCKED", "HTTP 403 Forbidden", "details", 403);
+            throw new ProviderError("HTTP_ERROR", "HTTP " + sRes.status, "details", sRes.status);
+          }
           var sHtml = yield sRes.text();
           var epList = parseEpisodes(sHtml);
-          if (!epList.length) return [];
+          if (!epList.length) {
+            throw new ProviderError("PARSE_ERROR", "Dizi b\xF6l\xFCm listesi ayr\u0131\u015Ft\u0131r\u0131lamad\u0131", "details");
+          }
           var targetEpisode = matchEpisode(epList, finalSeason, finalEpisode);
-          if (!targetEpisode) return [];
-          return yield fetchEpisodeMirrors(targetEpisode.url);
+          if (!targetEpisode) {
+            throw new ProviderError("NO_MATCH", "Hedef sezon/b\xF6l\xFCm bulunamad\u0131", "matching");
+          }
+          return yield fetchEpisodeMirrors(targetEpisode.url, signal);
         } catch (e2) {
+          if (e2 && (e2.name === "ProviderError" || e2.name === "AbortError" || e2.message === "TIMEOUT")) {
+            throw e2;
+          }
           return [];
         }
       });
@@ -907,6 +1156,7 @@ var require_adapter = __commonJS({
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -926,13 +1176,20 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
+            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
-                return provider2.getStreams(id, type, season, episode);
+                return provider2.getStreams(id, type, season, episode, callOpts);
               }),
               new Promise(function(_, reject) {
                 timer = setTimeout(function() {
                   timedOut = true;
+                  if (abortCtrl) {
+                    try {
+                      abortCtrl.abort(new Error("TIMEOUT"));
+                    } catch (_2) {
+                    }
+                  }
                   reject(new Error("TIMEOUT"));
                 }, limit);
               })
@@ -942,8 +1199,26 @@ var require_adapter = __commonJS({
             record.rejected = normalized.invalid;
             record.status = record.count ? "sources-found" : normalized.invalid ? "invalid-results" : "empty";
             return normalized.streams;
-          } catch (_) {
-            record.status = timedOut ? "timeout" : "error";
+          } catch (err) {
+            if (abortCtrl && !abortCtrl.signal.aborted) {
+              try {
+                abortCtrl.abort();
+              } catch (_) {
+              }
+            }
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+              record.status = "timeout";
+            } else if (err && err.name === "ProviderError") {
+              if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";
+              else if (err.code === "NO_MATCH") record.status = "no-match";
+              else if (err.code === "PARSE_ERROR") record.status = "parse-error";
+              else if (err.code === "TMDB_ERROR") record.status = "tmdb-error";
+              else record.status = "error";
+              if (err.stage) record.stage = err.stage;
+              if (err.code) record.reason = String(err.code).toLowerCase();
+            } else {
+              record.status = "error";
+            }
             return [];
           } finally {
             if (timer !== void 0) clearTimeout(timer);

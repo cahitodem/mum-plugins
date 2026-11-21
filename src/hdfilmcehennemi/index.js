@@ -1,5 +1,6 @@
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
-const { timeoutSignal } = require("../shared/http.js");
+const { timeoutSignal, fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -206,14 +207,6 @@ var SLUG_CACHE = new Map();
 
 // ==================== YARDIMCI FONKSİYONLAR ====================
 
-function fetchWithTimeout(url, options, ms) {
-  var opts = Object.assign({}, options || {});
-  try {
-    if (!opts.signal) opts.signal = timeoutSignal(ms || 10000);
-  } catch (e) {}
-  return fetch(url, opts);
-}
-
 function isAccessBlocked(res) {
   // A forbidden response is an upstream access decision. Trying more guessed
   // slugs against the same host cannot make that response useful.
@@ -364,7 +357,9 @@ async function findMovieSlug(tmdbIdOrSlug) {
     if (!cand) continue;
     try {
       var res = await fetchWithTimeout(BASE_URL + '/' + cand + '/', { headers: HEADERS }, 5000);
-      if (isAccessBlocked(res)) return null;
+      if (isAccessBlocked(res)) {
+        throw new ProviderError('HTTP_BLOCKED', 'HDFilmCehennemi 403 Forbidden', 'search', 403);
+      }
       if (res.status === 200) {
         var html = await res.text();
         var imdbMatch = html.match(/https:\/\/(?:www\.)?imdb\.com\/title\/(tt\d+)/i);
@@ -599,6 +594,9 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
 
     return streams;
   } catch (e) {
+    if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+      throw e;
+    }
     return [];
   }
 }

@@ -6,7 +6,7 @@
 
 const { sortStreamsByQuality } = require('../shared/quality');
 const { loadConfig, val, wrapAll } = require('../shared/config');
-const { timeoutSignal } = require('../shared/http');
+const { timeoutSignal, fetchWithTimeout } = require('../shared/http');
 
 var _cfgReady = null;
 function cfgReady() {
@@ -138,19 +138,19 @@ function matchesShowTitle(rawName, targetName) {
 const EP_REGEX = /(?:s\d+[\s._-]*e0*(\d+)|(?:b[oö]l[uü]m|episode|ep)[\s._-]*0*(\d+)|\b0*(\d+)\.[\s._-]*b[oö]l[uü]m|\b\d+x0*(\d+)\b)/i;
 const S_REGEX = /(?:s0*(\d+)[\s._-]*e|\b0*(\d+)x\d+\b)/i;
 
-async function resolveTmdbMovie(rawId) {
+async function resolveTmdbMovie(rawId, signal) {
     let cleanId = String(rawId).replace(/^tmdb:/, '').split(':')[0].trim();
     const isImdb = cleanId.startsWith('tt');
     try {
         let movieId = cleanId;
         if (isImdb) {
-            const res = await fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: timeoutSignal(8000) });
+            const res = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
             const data = await res.json();
             const found = data.movie_results && data.movie_results[0] ? data.movie_results[0] : null;
             if (!found || !found.id) return null;
             movieId = String(found.id);
         }
-        const res = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: timeoutSignal(8000) });
+        const res = await fetchWithTimeout(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: signal }, 8000);
         const data = await res.json();
         if (!data || (!data.title && !data.original_title)) return null;
         if (isImdb && !data.imdb_id) data.imdb_id = cleanId;
@@ -160,19 +160,19 @@ async function resolveTmdbMovie(rawId) {
     }
 }
 
-async function resolveTmdbShow(rawId) {
+async function resolveTmdbShow(rawId, signal) {
     let cleanId = String(rawId).replace(/^tmdb:/, '').split(':')[0].trim();
     const isImdb = cleanId.startsWith('tt');
     try {
         let showId = cleanId;
         if (isImdb) {
-            const res = await fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: timeoutSignal(8000) });
+            const res = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
             const data = await res.json();
             const found = data.tv_results && data.tv_results[0] ? data.tv_results[0] : null;
             if (!found || !found.id) return null;
             showId = String(found.id);
         }
-        const res = await fetch(`https://api.themoviedb.org/3/tv/${showId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: timeoutSignal(8000) });
+        const res = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${showId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: signal }, 8000);
         const data = await res.json();
         if (!data || (!data.name && !data.original_name)) return null;
         return data;
@@ -181,13 +181,13 @@ async function resolveTmdbShow(rawId) {
     }
 }
 
-async function fetchM3U(url) {
+async function fetchM3U(url, signal) {
     const now = Date.now();
     if (cache[url] && (now - (cacheTime[url] || 0) < 300000)) {
         return cache[url];
     }
     try {
-        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: timeoutSignal(15000) });
+        const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: signal }, 8000);
         if (!res.ok) return null;
         const text = await res.text();
         cache[url] = text;
@@ -312,32 +312,43 @@ function scanFilmM3UContent(content, d, targetImdb, targetYear, seenUrls, result
     }
 }
 
-async function searchFilmStreams(tmdbId) {
+async function searchFilmStreams(tmdbId, opts) {
+    var signal = opts && opts.signal;
     try {
-        const d = await resolveTmdbMovie(tmdbId);
+        const d = await resolveTmdbMovie(tmdbId, signal);
         if (!d || (!d.title && !d.original_title)) return [];
 
         const targetImdb = d.imdb_id || (d.external_ids ? d.external_ids.imdb_id : null);
         const targetYear = (d.release_date || '').slice(0, 4);
 
-        const targetGroups = new Set([
+        const primaryGroups = new Set([
             ...getLetterGroups(d.title),
-            ...getLetterGroups(d.original_title),
-            '0_9_rakam',
-            'diger'
+            ...getLetterGroups(d.original_title)
         ]);
 
         const results = [];
         const seenUrls = new Set();
 
-        for (const grp of targetGroups) {
-            const m3uUrl = `${FILM_BASE_URL}nuvio_${grp}.m3u`;
-            const content = await fetchM3U(m3uUrl);
-            scanFilmM3UContent(content, d, targetImdb, targetYear, seenUrls, results);
+        const pArr = Array.from(primaryGroups);
+        const pContents = await Promise.all(pArr.map(function(grp) {
+            return fetchM3U(`${FILM_BASE_URL}nuvio_${grp}.m3u`, signal);
+        }));
+        for (var i = 0; i < pContents.length; i++) {
+            scanFilmM3UContent(pContents[i], d, targetImdb, targetYear, seenUrls, results);
         }
 
-        if (results.length === 0 && FILM_FULL_URL) {
-            const fullContent = await fetchM3U(FILM_FULL_URL);
+        if (results.length === 0) {
+            const fallbackGroups = ['0_9_rakam', 'diger'].filter(function(g) { return !primaryGroups.has(g); });
+            const fbContents = await Promise.all(fallbackGroups.map(function(grp) {
+                return fetchM3U(`${FILM_BASE_URL}nuvio_${grp}.m3u`, signal);
+            }));
+            for (var j = 0; j < fbContents.length; j++) {
+                scanFilmM3UContent(fbContents[j], d, targetImdb, targetYear, seenUrls, results);
+            }
+        }
+
+        if (results.length === 0 && FILM_FULL_URL && (!signal || !signal.aborted)) {
+            const fullContent = await fetchM3U(FILM_FULL_URL, signal);
             scanFilmM3UContent(fullContent, d, targetImdb, targetYear, seenUrls, results);
         }
 
@@ -406,7 +417,8 @@ function scanDiziM3UContent(content, d, finalSeason, finalEpisode, sPad, ePad, s
     }
 }
 
-async function searchDiziStreams(rawId, seasonInput, episodeInput) {
+async function searchDiziStreams(rawId, seasonInput, episodeInput, opts) {
+    var signal = opts && opts.signal;
     let finalSeason = parseInt(seasonInput, 10) || 1;
     let finalEpisode = parseInt(episodeInput, 10) || 1;
 
@@ -419,31 +431,42 @@ async function searchDiziStreams(rawId, seasonInput, episodeInput) {
     }
 
     try {
-        const d = await resolveTmdbShow(rawId);
+        const d = await resolveTmdbShow(rawId, signal);
         if (!d || (!d.name && !d.original_name)) return [];
 
         const sPad = finalSeason.toString().padStart(2, '0');
         const ePad = finalEpisode.toString().padStart(2, '0');
 
-        const targetGroups = new Set([
+        const primaryGroups = new Set([
             ...getLetterGroups(d.name),
-            ...getLetterGroups(d.original_name),
-            '0_9_rakam',
-            'diger'
+            ...getLetterGroups(d.original_name)
         ]);
 
         const results = [];
         const seenUrls = new Set();
 
-        for (const grp of targetGroups) {
+        const pArr = Array.from(primaryGroups);
+        const pContents = await Promise.all(pArr.map(function(grp) {
             const fileName = `dizi_${grp}_s${finalSeason}.m3u`;
-            const m3uUrl = `${DIZI_BASE_URL}${fileName}`;
-            const content = await fetchM3U(m3uUrl);
-            scanDiziM3UContent(content, d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
+            return fetchM3U(`${DIZI_BASE_URL}${fileName}`, signal);
+        }));
+        for (var i = 0; i < pContents.length; i++) {
+            scanDiziM3UContent(pContents[i], d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
         }
 
-        if (results.length === 0 && DIZI_FULL_URL) {
-            const fullContent = await fetchM3U(DIZI_FULL_URL);
+        if (results.length === 0) {
+            const fallbackGroups = ['0_9_rakam', 'diger'].filter(function(g) { return !primaryGroups.has(g); });
+            const fbContents = await Promise.all(fallbackGroups.map(function(grp) {
+                const fileName = `dizi_${grp}_s${finalSeason}.m3u`;
+                return fetchM3U(`${DIZI_BASE_URL}${fileName}`, signal);
+            }));
+            for (var j = 0; j < fbContents.length; j++) {
+                scanDiziM3UContent(fbContents[j], d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
+            }
+        }
+
+        if (results.length === 0 && DIZI_FULL_URL && (!signal || !signal.aborted)) {
+            const fullContent = await fetchM3U(DIZI_FULL_URL, signal);
             scanDiziM3UContent(fullContent, d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
         }
 
@@ -453,16 +476,18 @@ async function searchDiziStreams(rawId, seasonInput, episodeInput) {
     }
 }
 
-async function getStreams(id, mediaType, season, episode) {
+async function getStreams(id, mediaType, season, episode, options) {
     let finalId = id;
     let finalType = mediaType;
     let finalSeason = season;
     let finalEpisode = episode;
+    let finalOpts = options || {};
 
     if (id && typeof id === 'object') {
         finalType = id.type || id.mediaType || mediaType;
         finalSeason = id.season || season;
         finalEpisode = id.episode || episode;
+        finalOpts = id.options || options || {};
         finalId = id.id || id.tmdbId || id.imdbId;
     }
 
@@ -480,9 +505,9 @@ async function getStreams(id, mediaType, season, episode) {
 
     let streams = [];
     if (isSeries) {
-        streams = await searchDiziStreams(finalId, finalSeason, finalEpisode);
+        streams = await searchDiziStreams(finalId, finalSeason, finalEpisode, finalOpts);
     } else {
-        streams = await searchFilmStreams(finalId);
+        streams = await searchFilmStreams(finalId, finalOpts);
     }
 
     return sortStreamsByQuality(streams);

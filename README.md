@@ -53,9 +53,9 @@ Anthology M3U'nun yalnız film/dizi listeleri tutulur; canlı M3U sağlayıcıs�
 
 ## Raporlar ve sınırlar
 
-MUM yalnız `provider`, `status`, `count`, `rejected`, `elapsedMs`, `playback` alanlarını yazar. Durumlar: `started`, `sources-found`, `empty`, `invalid-results`, `unsupported-type`, `invalid-input`, `timeout`, `error`. Ham hata metni, URL, çerez ve Authorization yazılmaz; upstream sağlayıcı konsol çıktıları derlenmiş modülde susturulur. Nuvio'nun kendi ağ günlükleri bu katmanın kontrolünde değildir.
+MUM yalnız `provider`, `status`, `count`, `rejected`, `elapsedMs`, `playback` alanlarını (ve güvenli hata teşhisinde `stage`, `reason`) yazar. Durumlar: `started`, `sources-found`, `empty`, `no-match`, `http-blocked`, `parse-error`, `tmdb-error`, `invalid-results`, `unsupported-type`, `invalid-input`, `timeout`, `error`. Ham hata metni, URL, çerez ve Authorization yazılmaz; upstream sağlayıcı konsol çıktıları derlenmiş modülde susturulur. Nuvio'nun kendi ağ günlükleri bu katmanın kontrolünde değildir.
 
-Adapter bir sağlayıcıyı varsayılan 12 saniyede, FilmModu gibi çok adımlı kaynağı 15 saniyede bekler; Promise zaman aşımı Nuvio'ya sonucu döndürür ancak upstream fetch'lerini iptal etmeyebilir. Yerel probe 55 saniyede süreci sonlandırır. Upstream'in kendi içinde yakalayıp `[]` döndürdüğü hatalar `empty` olarak kalır. Bir `started` kaydı yoksa UI/manifest/yükleme aşamasını kontrol edin.
+Adapter bir sağlayıcıyı varsayılan 12 saniyede, FilmModu gibi çok adımlı kaynağı 15 saniyede bekler; Promise zaman aşımında `AbortController` aracılığıyla arka plandaki tüm in-flight fetch istekleri anında iptal edilir. Tekil HTTP istekleri 8 saniye zaman aşımı ile sınırlandırılmıştır. Erişim engelleri (`http-blocked`), eşleşme bulunamaması (`no-match`) ve ayrıştırma bozuklukları (`parse-error`) artık sessizce `empty` olarak yutulmaz; ayrıştırılmış durum olarak bildirilir. Bir `started` kaydı yoksa UI/manifest/yükleme aşamasını kontrol edin.
 
 Siyah ekran ve ses incelemesi: [Windows tanılama](docs/WINDOWS-DIAGNOSTICS.md). Teknik kanıtlar ve sonraki işler: [inceleme](docs/REVIEW.md). Hata kaydı: [şablon](docs/BUG-REPORT.md).
 

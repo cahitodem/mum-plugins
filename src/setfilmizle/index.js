@@ -1,6 +1,8 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { pickBestCandidate } = require("../shared/matching.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -41,17 +43,7 @@ function ultraClean(str) {
         .trim();
 }
 
-function fetchWithTimeout(url, options, ms) {
-    var opts = options || {};
-    try {
-        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-            opts.signal = AbortSignal.timeout(ms || 15000);
-        }
-    } catch (e) {}
-    return fetch(url, opts);
-}
-
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
     try {
         var cleanId = String(id || '').trim();
         if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
@@ -60,7 +52,7 @@ async function resolveTmdbInfo(id, mediaType) {
         var origTitle = '';
         var year = '';
         if (cleanId.startsWith('tt')) {
-            var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', {}, 10000);
+            var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', { signal: signal }, 8000);
             if (findRes.ok) {
                 var fd = await findRes.json();
                 var match = (mediaType === 'tv' || mediaType === 'series')
@@ -78,7 +70,7 @@ async function resolveTmdbInfo(id, mediaType) {
         } else {
             numericId = cleanId;
             var type = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
-            var tRes = await fetchWithTimeout('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', {}, 10000);
+            var tRes = await fetchWithTimeout('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal: signal }, 8000);
             if (tRes.ok) {
                 var td = await tRes.json();
                 title = td.name || td.title || '';
@@ -89,7 +81,7 @@ async function resolveTmdbInfo(id, mediaType) {
         }
         return { title: title, origTitle: origTitle, numericId: numericId, year: year };
     } catch (e) {
-        return { title: '', origTitle: '', numericId: id };
+        return { title: '', origTitle: '', numericId: id, year: '' };
     }
 }
 
@@ -126,13 +118,17 @@ function parseCards(html) {
     return out;
 }
 
-async function searchSite(query) {
+async function searchSite(query, signal) {
     try {
-        var res = await fetchWithTimeout(BASE_URL + '/?s=' + encodeURIComponent(query), { headers: HEADERS }, 15000);
-        if (!res.ok) return [];
+        var res = await fetchWithTimeout(BASE_URL + '/?s=' + encodeURIComponent(query), { headers: HEADERS, signal: signal }, 8000);
+        if (!res.ok) {
+            if (res.status === 403) throw new ProviderError('HTTP_BLOCKED', 'SetFilmIzle 403 Forbidden', 'search', 403);
+            return [];
+        }
         var html = await res.text();
         return parseCards(html);
     } catch (e) {
+        if (e && e.name === 'ProviderError') throw e;
         return [];
     }
 }
@@ -521,12 +517,15 @@ async function getMeta(args) {
     }
 }
 
-async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
+    var signal = options && options.signal;
     try {
         if (typeof tmdbIdOrArgs === 'object' && tmdbIdOrArgs !== null) {
             mediaType = tmdbIdOrArgs.type || mediaType;
             seasonNum = tmdbIdOrArgs.season || seasonNum;
             episodeNum = tmdbIdOrArgs.episode || episodeNum;
+            options = tmdbIdOrArgs.options || options;
+            signal = options && options.signal;
             tmdbIdOrArgs = tmdbIdOrArgs.id;
         }
         if (typeof tmdbIdOrArgs === 'string' && tmdbIdOrArgs.indexOf(':') !== -1 && !tmdbIdOrArgs.startsWith('setfilmizle:')) {
@@ -552,7 +551,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
                 var target = vids.find(function(v) {
                     return v.season === (parseInt(seasonNum) || 1) && v.episode === (parseInt(episodeNum) || 1);
                 }) || vids[0];
-                if (target) return await getStreams(target.id);
+                if (target) return await getStreams(target.id, mediaType, seasonNum, episodeNum, options);
                 return await extractStreamsFromContentPage(href2);
             }
             return await extractStreamsFromContentPage(href2);
@@ -560,13 +559,17 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
 
         var season = parseInt(seasonNum) || 1;
         var episode = parseInt(episodeNum) || 1;
-        var info = await resolveTmdbInfo(tmdbIdOrArgs, mediaType);
+        var info = await resolveTmdbInfo(tmdbIdOrArgs, mediaType, signal);
         var searchTitles = [info.title, info.origTitle].filter(Boolean);
-        if (searchTitles.length === 0) return [];
+        if (searchTitles.length === 0) {
+            throw new ProviderError('TMDB_ERROR', 'TMDB arama bilgisi alınamadı', 'tmdb');
+        }
 
+        var hadCards = false;
         for (var t = 0; t < searchTitles.length; t++) {
-            var cards = await searchSite(searchTitles[t]);
+            var cards = await searchSite(searchTitles[t], signal);
             if (!cards || cards.length === 0) continue;
+            hadCards = true;
             var wantTv = (mediaType === 'tv' || mediaType === 'series');
             var filtered = cards.filter(function(c) { return wantTv ? c.isTv : !c.isTv; });
             var best = pickBest(filtered.length > 0 ? filtered : cards, searchTitles[t], info.year);
@@ -575,15 +578,13 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             if (best.isTv) {
                 var streams = await extractStreamsFromContentPage(best.href);
                 if (streams.length > 0) {
-                    // Bölüm sayfası doğrudan çalıştıysa dön (tek bölümlük ya da S01E01 varsayılanı)
                     if (season === 1 && episode === 1) return streams;
                 }
-                // Bölüm listesini dene
                 var showMeta = await getMeta('setfilmizle:show:' + encodeURIComponent(best.href));
                 var vids2 = (showMeta && showMeta.meta && showMeta.meta.videos) || [];
                 var tgt = vids2.find(function(v) { return v.season === season && v.episode === episode; });
                 if (tgt) {
-                    var epStreams = await getStreams(tgt.id);
+                    var epStreams = await getStreams(tgt.id, mediaType, season, episode, options);
                     if (epStreams.length > 0) return epStreams;
                 }
                 if (streams.length > 0) return streams;
@@ -592,8 +593,15 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
                 if (mStreams.length > 0) return mStreams;
             }
         }
+
+        if (hadCards) {
+            throw new ProviderError('NO_MATCH', 'SetFilmIzle eşleşen aday bulamadı', 'matching');
+        }
         return [];
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+            throw e;
+        }
         return [];
     }
 }

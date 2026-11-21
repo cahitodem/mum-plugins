@@ -1,6 +1,8 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { pickBestCandidate } = require("../shared/matching.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -53,17 +55,7 @@ function ultraClean(str) {
         .trim();
 }
 
-function fetchWithTimeout(url, options, ms) {
-    var opts = options || {};
-    try {
-        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-            opts.signal = AbortSignal.timeout(ms || 15000);
-        }
-    } catch (e) {}
-    return fetch(url, opts);
-}
-
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
     try {
         var cleanId = String(id || '').trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, '');
         if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
@@ -312,7 +304,8 @@ async function getMeta(args) {
     }
 }
 
-async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
+    var signal = options && options.signal;
     try {
         var id = tmdbIdOrArgs;
         var isSeries = mediaType === 'tv' || mediaType === 'series';
@@ -324,6 +317,8 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             if (tmdbIdOrArgs.type) isSeries = tmdbIdOrArgs.type === 'tv' || tmdbIdOrArgs.type === 'series';
             if (tmdbIdOrArgs.season) s = tmdbIdOrArgs.season;
             if (tmdbIdOrArgs.episode) e = tmdbIdOrArgs.episode;
+            options = tmdbIdOrArgs.options || options;
+            signal = options && options.signal;
         }
 
         var streams = [];
@@ -332,12 +327,12 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         // 1. Direct slug access
         if (typeof id === 'string' && id.startsWith('hdfilmdelisi:movie:')) {
             var slug = id.split(':').slice(2).join(':');
-            var apiRes = await fetchWithTimeout(BASE_URL + '/api/films/' + slug, { headers: HEADERS }, 10000);
+            var apiRes = await fetchWithTimeout(BASE_URL + '/api/films/' + slug, { headers: HEADERS, signal: signal }, 8000);
             if (apiRes.ok) {
                 var fData = await apiRes.json();
                 if (fData && fData.imdbId && fData.imdbId.startsWith('tt')) {
                     var directVix = 'https://ha.vixolity.com/vs/' + fData.imdbId;
-                    var vr = await fetchWithTimeout(directVix, { headers: VIXOLITY_HEADERS }, 8000);
+                    var vr = await fetchWithTimeout(directVix, { headers: VIXOLITY_HEADERS, signal: signal }, 8000);
                     if (vr.ok) {
                         var vt = await vr.text();
                         var subs = parseVixolitySubtitles(vt);
@@ -355,7 +350,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         }
 
         // 2. Resolve TMDB Info (includes imdbId)
-        var info = await resolveTmdbInfo(id, isSeries ? 'tv' : 'movie');
+        var info = await resolveTmdbInfo(id, isSeries ? 'tv' : 'movie', signal);
 
         // 3. Direct Vixolity HLS via IMDb ID (Dual Audio TR/EN + Subtitles)
         if (info && info.imdbId && info.imdbId.startsWith('tt')) {
@@ -363,7 +358,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
                 ? 'https://ha.vixolity.com/vs/' + info.imdbId + '/s' + s + '/e' + (e < 10 ? '0' + e : e)
                 : 'https://ha.vixolity.com/vs/' + info.imdbId;
 
-            var vRes = await fetchWithTimeout(vixUrl, { headers: VIXOLITY_HEADERS }, 8000);
+            var vRes = await fetchWithTimeout(vixUrl, { headers: VIXOLITY_HEADERS, signal: signal }, 8000);
             if (vRes.ok) {
                 var vTxt = await vRes.text();
                 if (vTxt.includes('#EXTM3U')) {
@@ -376,15 +371,17 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
 
         // 4. Fallback search on HDFilmDelisi API
         var searchTitles = [info.title, info.origTitle].filter(Boolean);
+        var hadResults = false;
         for (var t = 0; t < searchTitles.length; t++) {
             var results = await apiSearch(searchTitles[t]);
             if (!results || results.length === 0) continue;
+            hadResults = true;
             var best = pickBest(results, searchTitles[t], info.year);
             if (!best || !best.slug) continue;
 
             if (best.imdbId && best.imdbId.startsWith('tt') && !seenUrls.has('https://ha.vixolity.com/vs/' + best.imdbId)) {
                 var sUrl = 'https://ha.vixolity.com/vs/' + best.imdbId;
-                var sRes = await fetchWithTimeout(sUrl, { headers: VIXOLITY_HEADERS }, 8000);
+                var sRes = await fetchWithTimeout(sUrl, { headers: VIXOLITY_HEADERS, signal: signal }, 8000);
                 if (sRes.ok) {
                     var sTxt = await sRes.text();
                     if (sTxt.includes('#EXTM3U')) {
@@ -403,8 +400,15 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             if (streams.length > 0) break;
         }
 
+        if (streams.length === 0 && hadResults) {
+            throw new ProviderError('NO_MATCH', 'HDFilmDelisi eşleşen film bulamadı', 'matching');
+        }
+
         return streams;
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+            throw e;
+        }
         return [];
     }
 }

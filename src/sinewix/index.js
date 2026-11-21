@@ -5,7 +5,9 @@
 
 const { sortStreamsByQuality } = require('../shared/quality.js');
 const { loadConfig, val, wrapAll } = require('../shared/config.js');
-const { timeoutSignal } = require('../shared/http.js');
+const { timeoutSignal, fetchWithTimeout } = require('../shared/http.js');
+const { calculateMatchScore } = require('../shared/matching.js');
+const { ProviderError } = require('../shared/errors.js');
 
 var API_BASE = 'https://ydfvfdizipanel.ru/public/api';
 var PANEL_BASE = 'https://ydfvfdizipanel.ru';
@@ -100,26 +102,47 @@ function buildStreams(videos) {
     );
 }
 
-async function searchAndFetch(title, originalTitle, targetImdb, mediaType, seasonNum, episodeNum, targetYear, targetTmdbId) {
+async function searchAndFetch(title, originalTitle, targetImdb, mediaType, seasonNum, episodeNum, targetYear, targetTmdbId, signal) {
     try {
         var query = originalTitle || title || '';
         if (!query) return [];
 
-        var res = await fetch(API_BASE + '/search/' + encodeURIComponent(query) + '/' + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8000) });
+        var res = await fetchWithTimeout(API_BASE + '/search/' + encodeURIComponent(query) + '/' + API_KEY, { headers: API_HEADERS, signal: signal }, 8000);
         var data = await res.json().catch(function () { return {}; });
         var results = data.search || [];
 
         if (results.length === 0 && title && title.toLowerCase() !== query.toLowerCase()) {
-            var fRes = await fetch(API_BASE + '/search/' + encodeURIComponent(title) + '/' + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8000) });
+            var fRes = await fetchWithTimeout(API_BASE + '/search/' + encodeURIComponent(title) + '/' + API_KEY, { headers: API_HEADERS, signal: signal }, 8000);
             var fData = await fRes.json().catch(function () { return {}; });
             results = fData.search || [];
         }
 
         if (!results || results.length === 0) return [];
 
+        // Detay istekleri atmadan önce adayları başlık ve yıl üzerinden puanla
+        for (var k = 0; k < results.length; k++) {
+            var it = results[k];
+            var candTitle = it.title || it.name || '';
+            var candYear = (it.release_date || it.first_air_date || '').split('-')[0];
+            var s1 = calculateMatchScore(originalTitle || title, targetYear, candTitle, '', candYear);
+            var s2 = title ? calculateMatchScore(title, targetYear, candTitle, '', candYear) : { matched: false, score: 0 };
+            it._score = Math.max(s1.score || 0, s2.score || 0);
+            it._matched = s1.matched || s2.matched;
+        }
+
+        var validCandidates = results
+            .filter(function (r) { return r._matched && r._score >= 50; })
+            .sort(function (a, b) { return b._score - a._score; });
+
+        if (validCandidates.length === 0) {
+            throw new ProviderError('NO_MATCH', 'SineWix aday eşleşmesi bulunamadı', 'matching');
+        }
+
+        // Ağ yükünü ve zaman aşımını önlemek için en fazla ilk 2 adayın detayını çek
+        var topCandidates = validCandidates.slice(0, 2);
         var path = mediaType === 'movie' ? 'media/detail' : 'series/show';
-        var detailedItems = await Promise.all(results.map(function (item) {
-            return fetch(API_BASE + '/' + path + '/' + item.id + '/' + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8000) })
+        var detailedItems = await Promise.all(topCandidates.map(function (item) {
+            return fetchWithTimeout(API_BASE + '/' + path + '/' + item.id + '/' + API_KEY, { headers: API_HEADERS, signal: signal }, 8000)
                 .then(function (r) { return r.json(); })
                 .catch(function () { return null; });
         }));
@@ -145,7 +168,9 @@ async function searchAndFetch(title, originalTitle, targetImdb, mediaType, seaso
             });
         }
 
-        if (!bestMatch) return [];
+        if (!bestMatch) {
+            throw new ProviderError('NO_MATCH', 'SineWix detay eşleşmesi bulunamadı', 'matching');
+        }
 
         var vList = [];
         if (mediaType === 'movie') {
@@ -164,6 +189,9 @@ async function searchAndFetch(title, originalTitle, targetImdb, mediaType, seaso
 
         return await buildStreams(vList);
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+            throw e;
+        }
         return [];
     }
 }
@@ -320,7 +348,8 @@ async function getMeta(args) {
     }
 }
 
-async function getStreams(id, mediaType, seasonNum, episodeNum) {
+async function getStreams(id, mediaType, seasonNum, episodeNum, options) {
+    var signal = options && options.signal;
     try {
         if (typeof id === 'object' && id) {
             seasonNum = id.season || seasonNum;
@@ -344,7 +373,7 @@ async function getStreams(id, mediaType, seasonNum, episodeNum) {
 
         if (typeof id === 'string' && id.startsWith('sinewix:movie:')) {
             var mId = id.replace('sinewix:movie:', '');
-            var mRes = await fetch(API_BASE + '/media/detail/' + mId + '/' + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8000) });
+            var mRes = await fetchWithTimeout(API_BASE + '/media/detail/' + mId + '/' + API_KEY, { headers: API_HEADERS, signal: signal }, 8000);
             var mData = await mRes.json();
             return await buildStreams(mData.videos || []);
         }
@@ -352,7 +381,7 @@ async function getStreams(id, mediaType, seasonNum, episodeNum) {
         if (typeof id === 'string' && id.startsWith('sinewix:series:')) {
             var showMeta = await getMeta(id);
             if (showMeta && showMeta.meta && Array.isArray(showMeta.meta.videos) && showMeta.meta.videos.length > 0) {
-                return await getStreams(showMeta.meta.videos[0].id);
+                return await getStreams(showMeta.meta.videos[0].id, mediaType, seasonNum, episodeNum, options);
             }
         }
 
@@ -361,7 +390,7 @@ async function getStreams(id, mediaType, seasonNum, episodeNum) {
             var showId = parts[0];
             var targetSeason = parseInt(parts[1]) || 1;
             var targetEpisode = parseInt(parts[2]) || 1;
-            var sRes = await fetch(API_BASE + '/series/show/' + showId + '/' + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8000) });
+            var sRes = await fetchWithTimeout(API_BASE + '/series/show/' + showId + '/' + API_KEY, { headers: API_HEADERS, signal: signal }, 8000);
             var sData = await sRes.json();
             var targetSeasonObj = (sData.seasons || []).find(function (s) {
                 return parseInt(s.season_number) === targetSeason;
@@ -378,15 +407,20 @@ async function getStreams(id, mediaType, seasonNum, episodeNum) {
         }
 
         var data = await resolveTmdbInfo(id, mediaType);
-        if (!data) return [];
+        if (!data) {
+            throw new ProviderError('TMDB_ERROR', 'SineWix TMDB bilgisi çözülemedi', 'tmdb');
+        }
         var ot = data.original_title || data.original_name || data.title || data.name;
         var releaseDate = data.release_date || data.first_air_date || '';
         var year = releaseDate ? releaseDate.split('-')[0] : '';
         var targetImdb = data.imdb_id || (data.external_ids && data.external_ids.imdb_id);
         var targetTmdbId = data.tmdb_id || data.id;
-        var streams = await searchAndFetch(data.title || data.name, ot, targetImdb, mediaType, seasonNum || 1, episodeNum || 1, year, targetTmdbId);
+        var streams = await searchAndFetch(data.title || data.name, ot, targetImdb, mediaType, seasonNum || 1, episodeNum || 1, year, targetTmdbId, signal);
         return streams || [];
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+            throw e;
+        }
         return [];
     }
 }

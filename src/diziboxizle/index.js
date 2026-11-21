@@ -1,4 +1,7 @@
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { pickBestCandidate } = require("../shared/matching.js");
+const { fetchWithTimeout, timeoutSignal } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -190,15 +193,6 @@ var SERIES_MAP = {
   "zombieverse": "Zombieverse"
 };
 
-function timeoutSignal(ms) {
-  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    return AbortSignal.timeout(ms);
-  }
-  var controller = new AbortController();
-  setTimeout(function() { controller.abort(); }, ms);
-  return controller.signal;
-}
-
 function ultraClean(str) {
   if (!str) return '';
   return str.toString().toLowerCase()
@@ -230,19 +224,20 @@ function decodeHtmlEntities(str) {
 }
 
 /**
- * TMDB / IMDb ID'den çok dilli dizi başlıklarını toplar
+ * TMDB / IMDb ID'den çok dilli dizi başlıklarını ve yılını toplar
  */
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
   try {
     var cleanId = String(id || '').trim();
     if (cleanId.indexOf(':') !== -1) cleanId = cleanId.split(':')[0];
 
     var numericId = null;
     var titles = [];
+    var year = '';
 
     if (cleanId.startsWith('tt')) {
       var findUrl = 'https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id';
-      var findRes = await fetch(findUrl, { signal: timeoutSignal(6000) });
+      var findRes = await fetchWithTimeout(findUrl, { signal: signal }, 6000);
       if (findRes.ok) {
         var findData = await findRes.json();
         var item = (mediaType === 'tv' || mediaType === 'series')
@@ -254,6 +249,8 @@ async function resolveTmdbInfo(id, mediaType) {
           if (item.title) titles.push(item.title);
           if (item.original_name && titles.indexOf(item.original_name) === -1) titles.push(item.original_name);
           if (item.original_title && titles.indexOf(item.original_title) === -1) titles.push(item.original_title);
+          var rd0 = item.release_date || item.first_air_date || '';
+          if (rd0) year = rd0.split('-')[0];
         }
       }
     } else if (/^\d+$/.test(cleanId)) {
@@ -262,36 +259,40 @@ async function resolveTmdbInfo(id, mediaType) {
 
     if (numericId) {
       var type = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
-      var trRes = await fetch('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal: timeoutSignal(6000) });
+      var trRes = await fetchWithTimeout('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal: signal }, 6000);
       if (trRes.ok) {
         var trData = await trRes.json();
         if (trData.name && titles.indexOf(trData.name) === -1) titles.push(trData.name);
         if (trData.title && titles.indexOf(trData.title) === -1) titles.push(trData.title);
         if (trData.original_name && titles.indexOf(trData.original_name) === -1) titles.push(trData.original_name);
         if (trData.original_title && titles.indexOf(trData.original_title) === -1) titles.push(trData.original_title);
+        var rd1 = trData.release_date || trData.first_air_date || '';
+        if (rd1 && !year) year = rd1.split('-')[0];
       }
 
-      var enRes = await fetch('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=en-US', { signal: timeoutSignal(6000) });
+      var enRes = await fetchWithTimeout('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=en-US', { signal: signal }, 6000);
       if (enRes.ok) {
         var enData = await enRes.json();
         if (enData.name && titles.indexOf(enData.name) === -1) titles.push(enData.name);
         if (enData.title && titles.indexOf(enData.title) === -1) titles.push(enData.title);
         if (enData.original_name && titles.indexOf(enData.original_name) === -1) titles.push(enData.original_name);
         if (enData.original_title && titles.indexOf(enData.original_title) === -1) titles.push(enData.original_title);
+        var rd2 = enData.release_date || enData.first_air_date || '';
+        if (rd2 && !year) year = rd2.split('-')[0];
       }
     }
 
     if (!titles.length && cleanId) titles.push(cleanId);
-    return { titles: titles, numericId: numericId };
+    return { titles: titles, numericId: numericId, year: year };
   } catch (e) {
-    return { titles: [String(id || '')], numericId: null };
+    return { titles: [String(id || '')], numericId: null, year: '' };
   }
 }
 
 /**
- * Site içi arama yapar (Wordpress REST API ve HTML arama)
+ * Site içi arama yapar (Wordpress REST API ve HTML arama paralel yürütülür)
  */
-async function searchSeries(query) {
+async function searchSeries(query, signal) {
   try {
     var cleanQ = ultraClean(query);
     if (!cleanQ) return [];
@@ -305,49 +306,55 @@ async function searchSeries(query) {
         var sTitle = SERIES_MAP[slug];
         var sClean = ultraClean(sTitle);
         var slugClean = ultraClean(slug);
-        if (sClean === cleanQ || slugClean === cleanQ || sClean.indexOf(cleanQ) !== -1 || cleanQ.indexOf(sClean) !== -1) {
+        if (sClean === cleanQ || slugClean === cleanQ) {
+          // Tam eşleşme: REST ve HTML aramasını beklemeden anında dön (erken çıkış)
+          return [{ slug: slug, title: sTitle, url: BASE_URL + '/' + slug + '/' }];
+        }
+        if (sClean.indexOf(cleanQ) !== -1 || cleanQ.indexOf(sClean) !== -1) {
           seenSlugs[slug] = true;
           results.push({ slug: slug, title: sTitle, url: BASE_URL + '/' + slug + '/' });
         }
       }
     }
 
-    // 2. WP REST API Categories arama
-    try {
-      var wpCatUrl = BASE_URL + '/wp-json/wp/v2/categories?search=' + encodeURIComponent(query);
-      var wpRes = await fetch(wpCatUrl, { headers: HEADERS, signal: timeoutSignal(6000) });
-      if (wpRes.ok) {
-        var wpCats = await wpRes.json();
-        if (Array.isArray(wpCats)) {
-          for (var i = 0; i < wpCats.length; i++) {
-            var c = wpCats[i];
-            if (c.slug && !seenSlugs[c.slug]) {
-              seenSlugs[c.slug] = true;
-              results.push({ slug: c.slug, title: decodeHtmlEntities(c.name || c.slug), url: BASE_URL + '/' + c.slug + '/' });
-            }
-          }
-        }
-      }
-    } catch (e) {}
+    // 2. WP REST API Categories ve HTML Aramayı PARALEL yürüt
+    var wpCatUrl = BASE_URL + '/wp-json/wp/v2/categories?search=' + encodeURIComponent(query);
+    var searchUrl = BASE_URL + '/?s=' + encodeURIComponent(query);
+    var fetchOpts = { headers: HEADERS, signal: signal };
 
-    // 3. HTML Arama Sayfası
-    try {
-      var searchUrl = BASE_URL + '/?s=' + encodeURIComponent(query);
-      var sRes = await fetch(searchUrl, { headers: HEADERS, signal: timeoutSignal(6000) });
-      if (sRes.ok) {
-        var sHtml = await sRes.text();
-        var linkRegex = /<div class="categorytitle"[^>]*>\s*<a href="https:\/\/diziboxizle\.com\/([a-z0-9-]+)\/"[^>]*>([^<]+)<\/a>/gi;
-        var lm;
-        while ((lm = linkRegex.exec(sHtml)) !== null) {
-          var hSlug = lm[1];
-          var hTitle = decodeHtmlEntities(lm[2]);
-          if (!seenSlugs[hSlug]) {
-            seenSlugs[hSlug] = true;
-            results.push({ slug: hSlug, title: hTitle, url: BASE_URL + '/' + hSlug + '/' });
-          }
+    var pCats = fetchWithTimeout(wpCatUrl, fetchOpts, 6000)
+      .then(function(r) { return r.ok ? r.json() : []; })
+      .catch(function() { return []; });
+    var pHtml = fetchWithTimeout(searchUrl, fetchOpts, 6000)
+      .then(function(r) { return r.ok ? r.text() : ''; })
+      .catch(function() { return ''; });
+
+    var pair = await Promise.all([pCats, pHtml]);
+    var wpCats = pair[0];
+    var sHtml = pair[1];
+
+    if (Array.isArray(wpCats)) {
+      for (var i = 0; i < wpCats.length; i++) {
+        var c = wpCats[i];
+        if (c.slug && !seenSlugs[c.slug]) {
+          seenSlugs[c.slug] = true;
+          results.push({ slug: c.slug, title: decodeHtmlEntities(c.name || c.slug), url: BASE_URL + '/' + c.slug + '/' });
         }
       }
-    } catch (e) {}
+    }
+
+    if (sHtml) {
+      var linkRegex = /<div class="categorytitle"[^>]*>\s*<a href="(?:https?:\/\/[^\/]+)?\/([a-z0-9-]+)\/"[^>]*>([^<]+)<\/a>/gi;
+      var lm;
+      while ((lm = linkRegex.exec(sHtml)) !== null) {
+        var hSlug = lm[1];
+        var hTitle = decodeHtmlEntities(lm[2]);
+        if (!seenSlugs[hSlug]) {
+          seenSlugs[hSlug] = true;
+          results.push({ slug: hSlug, title: hTitle, url: BASE_URL + '/' + hSlug + '/' });
+        }
+      }
+    }
 
     return results;
   } catch (e) {
@@ -356,30 +363,11 @@ async function searchSeries(query) {
 }
 
 /**
- * Adaylar arasından en uygun diziyi seçer
+ * Adaylar arasından en uygun diziyi seçer (shared matching kurallarıyla)
  */
-function pickBestSeries(candidates, targetTitle) {
+function pickBestSeries(candidates, targetTitle, targetYear) {
   if (!candidates || !candidates.length) return null;
-  var cleanTarget = ultraClean(targetTitle);
-
-  // Tam eşleşme
-  for (var i = 0; i < candidates.length; i++) {
-    var cClean = ultraClean(candidates[i].title);
-    var slugClean = ultraClean(candidates[i].slug);
-    if (cClean === cleanTarget || slugClean === cleanTarget) {
-      return candidates[i];
-    }
-  }
-
-  // Kısmi eşleşme
-  for (var j = 0; j < candidates.length; j++) {
-    var candClean = ultraClean(candidates[j].title);
-    if (candClean && cleanTarget && (candClean.indexOf(cleanTarget) !== -1 || cleanTarget.indexOf(candClean) !== -1)) {
-      return candidates[j];
-    }
-  }
-
-  return candidates[0];
+  return pickBestCandidate(candidates, targetTitle, targetYear, { minCoverage: 0.75, minScore: 50 });
 }
 
 /**
@@ -389,10 +377,11 @@ function parseEpisodes(detailHtml) {
   var episodes = [];
   var seen = {};
 
-  var epRegex = /<a[^>]+href="(https:\/\/diziboxizle\.com\/[a-z0-9-]+-(?:[0-9]+-sezon-[0-9]+-bolum|[0-9]+-bolum)\/)"[^>]*>([\s\S]*?)<\/a>/gi;
+  var epRegex = /<a[^>]+href="((?:https?:\/\/[^\/]+)?\/[a-z0-9-]+-(?:[0-9]+-sezon-[0-9]+-bolum|[0-9]+-bolum)\/)"[^>]*>([\s\S]*?)<\/a>/gi;
   var m;
   while ((m = epRegex.exec(detailHtml)) !== null) {
-    var url = m[1];
+    var rawUrl = m[1];
+    var url = rawUrl.startsWith('http') ? rawUrl : (BASE_URL + (rawUrl.startsWith('/') ? '' : '/') + rawUrl);
     var rawText = decodeHtmlEntities(m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
 
     var season = 1;
@@ -562,9 +551,9 @@ async function resolveOkRu(iframeUrl) {
 /**
  * Bölüm sayfasındaki iframe ve oynatıcı kaynaklarını çıkarıp çözer
  */
-async function fetchEpisodeMirrors(episodeUrl) {
+async function fetchEpisodeMirrors(episodeUrl, signal) {
   try {
-    var res = await fetch(episodeUrl, { headers: HEADERS, signal: timeoutSignal(8000) });
+    var res = await fetchWithTimeout(episodeUrl, { headers: HEADERS, signal: signal }, 8000);
     if (!res.ok) return [];
     var html = await res.text();
 
@@ -727,19 +716,20 @@ async function getMeta(args) {
 /**
  * getStreams: TMDB / IMDb ID veya dahili diziboxizle:ep:* ID ile video akışlarını döner
  */
-async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
+  var signal = options && options.signal;
   try {
     var isTv = (mediaType === 'tv' || mediaType === 'series');
 
     // 1. Obje parametresi desteği
     if (typeof tmdbId === 'object' && tmdbId && tmdbId.id) {
-      return getStreams(tmdbId.id, tmdbId.type || mediaType, tmdbId.season || seasonNum, tmdbId.episode || episodeNum);
+      return getStreams(tmdbId.id, tmdbId.type || mediaType, tmdbId.season || seasonNum, tmdbId.episode || episodeNum, options);
     }
 
     // 2. Doğrudan Bölüm ID'si (diziboxizle:ep:*)
     if (typeof tmdbId === 'string' && tmdbId.startsWith('diziboxizle:ep:')) {
       var epSlug = tmdbId.replace('diziboxizle:ep:', '');
-      return await fetchEpisodeMirrors(BASE_URL + '/' + epSlug + '/');
+      return await fetchEpisodeMirrors(BASE_URL + '/' + epSlug + '/', signal);
     }
 
     // 3. Doğrudan Dizi ID'si (diziboxizle:show:*)
@@ -752,7 +742,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         var matchedV = showMeta.meta.videos.find(function(v) {
           return v.season === finalSeason && v.episode === finalEpisode;
         }) || showMeta.meta.videos[0];
-        return await getStreams(matchedV.id, mediaType, finalSeason, finalEpisode);
+        return await getStreams(matchedV.id, mediaType, finalSeason, finalEpisode, options);
       }
     }
 
@@ -767,36 +757,50 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }
     }
 
-    var info = await resolveTmdbInfo(tmdbId, mediaType);
-    if (!info.titles || !info.titles.length) return [];
+    var info = await resolveTmdbInfo(tmdbId, mediaType, signal);
+    if (!info.titles || !info.titles.length) {
+      throw new ProviderError('TMDB_ERROR', 'TMDB arama bilgisi alınamadı', 'tmdb');
+    }
 
     var matchedSeries = null;
 
     // TMDB başlıklarıyla arama yap
     for (var i = 0; i < info.titles.length; i++) {
       var q = info.titles[i];
-      var list = await searchSeries(q);
+      var list = await searchSeries(q, signal);
       if (list && list.length > 0) {
-        matchedSeries = pickBestSeries(list, q);
+        matchedSeries = pickBestSeries(list, q, info.year);
         if (matchedSeries) break;
       }
     }
 
-    if (!matchedSeries) return [];
+    if (!matchedSeries) {
+      throw new ProviderError('NO_MATCH', 'DiziBoxİzle üzerinde eşleşen dizi bulunamadı', 'matching');
+    }
 
     // Dizi detay sayfasından bölümleri çek
-    var sRes = await fetch(matchedSeries.url, { headers: HEADERS, signal: timeoutSignal(8000) });
-    if (!sRes.ok) return [];
+    var sRes = await fetchWithTimeout(matchedSeries.url, { headers: HEADERS, signal: signal }, 8000);
+    if (!sRes.ok) {
+      if (sRes.status === 403) throw new ProviderError('HTTP_BLOCKED', 'HTTP 403 Forbidden', 'details', 403);
+      throw new ProviderError('HTTP_ERROR', 'HTTP ' + sRes.status, 'details', sRes.status);
+    }
     var sHtml = await sRes.text();
 
     var epList = parseEpisodes(sHtml);
-    if (!epList.length) return [];
+    if (!epList.length) {
+      throw new ProviderError('PARSE_ERROR', 'Dizi bölüm listesi ayrıştırılamadı', 'details');
+    }
 
     var targetEpisode = matchEpisode(epList, finalSeason, finalEpisode);
-    if (!targetEpisode) return [];
+    if (!targetEpisode) {
+      throw new ProviderError('NO_MATCH', 'Hedef sezon/bölüm bulunamadı', 'matching');
+    }
 
-    return await fetchEpisodeMirrors(targetEpisode.url);
+    return await fetchEpisodeMirrors(targetEpisode.url, signal);
   } catch (e) {
+    if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+      throw e;
+    }
     return [];
   }
 }

@@ -1,6 +1,8 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { pickBestCandidate } = require("../shared/matching.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -33,16 +35,6 @@ function ultraClean(str) {
         .replace(/[şŞ]/g, 's').replace(/[ğĞ]/g, 'g').replace(/[çÇ]/g, 'c')
         .replace(/[^a-z0-9]/g, '')
         .trim();
-}
-
-function fetchWithTimeout(url, options, ms) {
-    var opts = options || {};
-    try {
-        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-            opts.signal = AbortSignal.timeout(ms || 15000);
-        }
-    } catch (e) {}
-    return fetch(url, opts);
 }
 
 function headersFor(base) {
@@ -202,19 +194,24 @@ async function searchVip(query) {
     }
 }
 
-async function searchAll(query) {
-    var vipCards = await searchVip(query);
+async function searchAll(query, signal) {
+    var vipCards = await searchVip(query, signal);
     if (vipCards && vipCards.length > 0) return vipCards;
     var all = [];
     for (var i = 0; i < BASES.length; i++) {
         try {
             var base = BASES[i];
-            var res = await fetchWithTimeout(base + '/?s=' + encodeURIComponent(query), { headers: headersFor(base) }, 15000);
-            if (!res.ok) continue;
+            var res = await fetchWithTimeout(base + '/?s=' + encodeURIComponent(query), { headers: headersFor(base), signal: signal }, 8000);
+            if (!res.ok) {
+                if (res.status === 403) throw new ProviderError('HTTP_BLOCKED', 'HDFilmİzle 403 Forbidden', 'search', 403);
+                continue;
+            }
             var cards = parseCards(await res.text(), base);
             for (var j = 0; j < cards.length; j++) all.push(cards[j]);
             if (all.length > 0) break;
-        } catch (e) {}
+        } catch (e) {
+            if (e && e.name === 'ProviderError') throw e;
+        }
     }
     return all;
 }
@@ -690,10 +687,11 @@ async function getMeta(args) {
     }
 }
 
-async function getStreams(tmdbIdOrArgs, mediaType) {
+async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
+    var signal = options && options.signal;
     try {
         if (typeof tmdbIdOrArgs === 'object' && tmdbIdOrArgs && tmdbIdOrArgs.id) {
-            return getStreams(tmdbIdOrArgs.id, mediaType);
+            return getStreams(tmdbIdOrArgs.id, mediaType, seasonNum, episodeNum, tmdbIdOrArgs.options || options);
         }
         if (typeof tmdbIdOrArgs === 'string' && tmdbIdOrArgs.startsWith('hdfilmizle:movie:')) {
             var href = decodeURIComponent(tmdbIdOrArgs.split(':').slice(2).join(':'));
@@ -706,18 +704,29 @@ async function getStreams(tmdbIdOrArgs, mediaType) {
 
         var info = await resolveTmdbInfo(tmdbIdOrArgs);
         var searchTitles = [info.title, info.origTitle].filter(Boolean);
-        if (searchTitles.length === 0) return [];
+        if (searchTitles.length === 0) {
+            throw new ProviderError('TMDB_ERROR', 'TMDB arama bilgisi alınamadı', 'tmdb');
+        }
 
+        var hadCards = false;
         for (var t = 0; t < searchTitles.length; t++) {
-            var cards = await searchAll(searchTitles[t]);
+            var cards = await searchAll(searchTitles[t], signal);
             if (!cards || cards.length === 0) continue;
+            hadCards = true;
             var best = pickBest(cards, searchTitles[t], info.year);
             if (!best) continue;
             var streams = await extractStreamsFromFilmPage(best.href, best.base);
             if (streams.length > 0) return streams;
         }
+
+        if (hadCards) {
+            throw new ProviderError('NO_MATCH', 'HDFilmİzle eşleşen aday bulamadı', 'matching');
+        }
         return [];
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+            throw e;
+        }
         return [];
     }
 }

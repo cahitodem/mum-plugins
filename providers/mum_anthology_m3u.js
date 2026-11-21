@@ -204,15 +204,48 @@ var require_http = __commonJS({
       }
       var controller = new AbortController();
       setTimeout(function() {
-        controller.abort();
+        controller.abort(new Error("TIMEOUT"));
       }, ms);
       return controller.signal;
     }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
     function fetchWithTimeout(url, options, ms) {
-      ms = ms || 1e4;
+      ms = ms || 8e3;
       options = options || {};
-      if (!options.signal) {
-        options.signal = timeoutSignal(ms);
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
       }
       if (!options.headers) {
         options.headers = {};
@@ -225,6 +258,7 @@ var require_http = __commonJS({
     module2.exports = {
       DEFAULT_UA,
       timeoutSignal,
+      combineSignals,
       fetchWithTimeout
     };
   }
@@ -235,7 +269,7 @@ var require_anthology_m3u = __commonJS({
   "src/anthology_m3u/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
-    var { timeoutSignal } = require_http();
+    var { timeoutSignal, fetchWithTimeout } = require_http();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -365,20 +399,20 @@ var require_anthology_m3u = __commonJS({
     }
     var EP_REGEX = /(?:s\d+[\s._-]*e0*(\d+)|(?:b[oö]l[uü]m|episode|ep)[\s._-]*0*(\d+)|\b0*(\d+)\.[\s._-]*b[oö]l[uü]m|\b\d+x0*(\d+)\b)/i;
     var S_REGEX = /(?:s0*(\d+)[\s._-]*e|\b0*(\d+)x\d+\b)/i;
-    function resolveTmdbMovie(rawId) {
+    function resolveTmdbMovie(rawId, signal) {
       return __async(this, null, function* () {
         let cleanId = String(rawId).replace(/^tmdb:/, "").split(":")[0].trim();
         const isImdb = cleanId.startsWith("tt");
         try {
           let movieId = cleanId;
           if (isImdb) {
-            const res2 = yield fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: timeoutSignal(8e3) });
+            const res2 = yield fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal }, 8e3);
             const data2 = yield res2.json();
             const found = data2.movie_results && data2.movie_results[0] ? data2.movie_results[0] : null;
             if (!found || !found.id) return null;
             movieId = String(found.id);
           }
-          const res = yield fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: timeoutSignal(8e3) });
+          const res = yield fetchWithTimeout(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal }, 8e3);
           const data = yield res.json();
           if (!data || !data.title && !data.original_title) return null;
           if (isImdb && !data.imdb_id) data.imdb_id = cleanId;
@@ -388,20 +422,20 @@ var require_anthology_m3u = __commonJS({
         }
       });
     }
-    function resolveTmdbShow(rawId) {
+    function resolveTmdbShow(rawId, signal) {
       return __async(this, null, function* () {
         let cleanId = String(rawId).replace(/^tmdb:/, "").split(":")[0].trim();
         const isImdb = cleanId.startsWith("tt");
         try {
           let showId = cleanId;
           if (isImdb) {
-            const res2 = yield fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: timeoutSignal(8e3) });
+            const res2 = yield fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal }, 8e3);
             const data2 = yield res2.json();
             const found = data2.tv_results && data2.tv_results[0] ? data2.tv_results[0] : null;
             if (!found || !found.id) return null;
             showId = String(found.id);
           }
-          const res = yield fetch(`https://api.themoviedb.org/3/tv/${showId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: timeoutSignal(8e3) });
+          const res = yield fetchWithTimeout(`https://api.themoviedb.org/3/tv/${showId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal }, 8e3);
           const data = yield res.json();
           if (!data || !data.name && !data.original_name) return null;
           return data;
@@ -410,14 +444,14 @@ var require_anthology_m3u = __commonJS({
         }
       });
     }
-    function fetchM3U(url) {
+    function fetchM3U(url, signal) {
       return __async(this, null, function* () {
         const now = Date.now();
         if (cache[url] && now - (cacheTime[url] || 0) < 3e5) {
           return cache[url];
         }
         try {
-          const res = yield fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: timeoutSignal(15e3) });
+          const res = yield fetchWithTimeout(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal }, 8e3);
           if (!res.ok) return null;
           const text = yield res.text();
           cache[url] = text;
@@ -527,28 +561,40 @@ var require_anthology_m3u = __commonJS({
         }
       }
     }
-    function searchFilmStreams(tmdbId) {
+    function searchFilmStreams(tmdbId, opts) {
       return __async(this, null, function* () {
+        var signal = opts && opts.signal;
         try {
-          const d = yield resolveTmdbMovie(tmdbId);
+          const d = yield resolveTmdbMovie(tmdbId, signal);
           if (!d || !d.title && !d.original_title) return [];
           const targetImdb = d.imdb_id || (d.external_ids ? d.external_ids.imdb_id : null);
           const targetYear = (d.release_date || "").slice(0, 4);
-          const targetGroups = /* @__PURE__ */ new Set([
+          const primaryGroups = /* @__PURE__ */ new Set([
             ...getLetterGroups(d.title),
-            ...getLetterGroups(d.original_title),
-            "0_9_rakam",
-            "diger"
+            ...getLetterGroups(d.original_title)
           ]);
           const results = [];
           const seenUrls = /* @__PURE__ */ new Set();
-          for (const grp of targetGroups) {
-            const m3uUrl = `${FILM_BASE_URL}nuvio_${grp}.m3u`;
-            const content = yield fetchM3U(m3uUrl);
-            scanFilmM3UContent(content, d, targetImdb, targetYear, seenUrls, results);
+          const pArr = Array.from(primaryGroups);
+          const pContents = yield Promise.all(pArr.map(function(grp) {
+            return fetchM3U(`${FILM_BASE_URL}nuvio_${grp}.m3u`, signal);
+          }));
+          for (var i = 0; i < pContents.length; i++) {
+            scanFilmM3UContent(pContents[i], d, targetImdb, targetYear, seenUrls, results);
           }
-          if (results.length === 0 && FILM_FULL_URL) {
-            const fullContent = yield fetchM3U(FILM_FULL_URL);
+          if (results.length === 0) {
+            const fallbackGroups = ["0_9_rakam", "diger"].filter(function(g) {
+              return !primaryGroups.has(g);
+            });
+            const fbContents = yield Promise.all(fallbackGroups.map(function(grp) {
+              return fetchM3U(`${FILM_BASE_URL}nuvio_${grp}.m3u`, signal);
+            }));
+            for (var j = 0; j < fbContents.length; j++) {
+              scanFilmM3UContent(fbContents[j], d, targetImdb, targetYear, seenUrls, results);
+            }
+          }
+          if (results.length === 0 && FILM_FULL_URL && (!signal || !signal.aborted)) {
+            const fullContent = yield fetchM3U(FILM_FULL_URL, signal);
             scanFilmM3UContent(fullContent, d, targetImdb, targetYear, seenUrls, results);
           }
           return results.sort((a, b) => b.score - a.score);
@@ -603,8 +649,9 @@ var require_anthology_m3u = __commonJS({
         results.push(buildStreamObject(`${d.name || d.original_name} S${sPad}E${ePad}`, sourceTag, nextLine));
       }
     }
-    function searchDiziStreams(rawId, seasonInput, episodeInput) {
+    function searchDiziStreams(rawId, seasonInput, episodeInput, opts) {
       return __async(this, null, function* () {
+        var signal = opts && opts.signal;
         let finalSeason = parseInt(seasonInput, 10) || 1;
         let finalEpisode = parseInt(episodeInput, 10) || 1;
         if (typeof rawId === "string" && rawId.includes(":")) {
@@ -615,26 +662,38 @@ var require_anthology_m3u = __commonJS({
           }
         }
         try {
-          const d = yield resolveTmdbShow(rawId);
+          const d = yield resolveTmdbShow(rawId, signal);
           if (!d || !d.name && !d.original_name) return [];
           const sPad = finalSeason.toString().padStart(2, "0");
           const ePad = finalEpisode.toString().padStart(2, "0");
-          const targetGroups = /* @__PURE__ */ new Set([
+          const primaryGroups = /* @__PURE__ */ new Set([
             ...getLetterGroups(d.name),
-            ...getLetterGroups(d.original_name),
-            "0_9_rakam",
-            "diger"
+            ...getLetterGroups(d.original_name)
           ]);
           const results = [];
           const seenUrls = /* @__PURE__ */ new Set();
-          for (const grp of targetGroups) {
+          const pArr = Array.from(primaryGroups);
+          const pContents = yield Promise.all(pArr.map(function(grp) {
             const fileName = `dizi_${grp}_s${finalSeason}.m3u`;
-            const m3uUrl = `${DIZI_BASE_URL}${fileName}`;
-            const content = yield fetchM3U(m3uUrl);
-            scanDiziM3UContent(content, d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
+            return fetchM3U(`${DIZI_BASE_URL}${fileName}`, signal);
+          }));
+          for (var i = 0; i < pContents.length; i++) {
+            scanDiziM3UContent(pContents[i], d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
           }
-          if (results.length === 0 && DIZI_FULL_URL) {
-            const fullContent = yield fetchM3U(DIZI_FULL_URL);
+          if (results.length === 0) {
+            const fallbackGroups = ["0_9_rakam", "diger"].filter(function(g) {
+              return !primaryGroups.has(g);
+            });
+            const fbContents = yield Promise.all(fallbackGroups.map(function(grp) {
+              const fileName = `dizi_${grp}_s${finalSeason}.m3u`;
+              return fetchM3U(`${DIZI_BASE_URL}${fileName}`, signal);
+            }));
+            for (var j = 0; j < fbContents.length; j++) {
+              scanDiziM3UContent(fbContents[j], d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
+            }
+          }
+          if (results.length === 0 && DIZI_FULL_URL && (!signal || !signal.aborted)) {
+            const fullContent = yield fetchM3U(DIZI_FULL_URL, signal);
             scanDiziM3UContent(fullContent, d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
           }
           return results;
@@ -643,16 +702,18 @@ var require_anthology_m3u = __commonJS({
         }
       });
     }
-    function getStreams(id, mediaType, season, episode) {
+    function getStreams(id, mediaType, season, episode, options) {
       return __async(this, null, function* () {
         let finalId = id;
         let finalType = mediaType;
         let finalSeason = season;
         let finalEpisode = episode;
+        let finalOpts = options || {};
         if (id && typeof id === "object") {
           finalType = id.type || id.mediaType || mediaType;
           finalSeason = id.season || season;
           finalEpisode = id.episode || episode;
+          finalOpts = id.options || options || {};
           finalId = id.id || id.tmdbId || id.imdbId;
         }
         if (typeof finalId === "string" && finalId.includes(":")) {
@@ -667,9 +728,9 @@ var require_anthology_m3u = __commonJS({
         const isSeries = finalType === "tv" || finalType === "series" || finalSeason !== void 0 && finalEpisode !== void 0 && finalSeason !== null;
         let streams = [];
         if (isSeries) {
-          streams = yield searchDiziStreams(finalId, finalSeason, finalEpisode);
+          streams = yield searchDiziStreams(finalId, finalSeason, finalEpisode, finalOpts);
         } else {
-          streams = yield searchFilmStreams(finalId);
+          streams = yield searchFilmStreams(finalId, finalOpts);
         }
         return sortStreamsByQuality(streams);
       });
@@ -718,6 +779,7 @@ var require_adapter = __commonJS({
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -737,13 +799,20 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
+            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
-                return provider2.getStreams(id, type, season, episode);
+                return provider2.getStreams(id, type, season, episode, callOpts);
               }),
               new Promise(function(_, reject) {
                 timer = setTimeout(function() {
                   timedOut = true;
+                  if (abortCtrl) {
+                    try {
+                      abortCtrl.abort(new Error("TIMEOUT"));
+                    } catch (_2) {
+                    }
+                  }
                   reject(new Error("TIMEOUT"));
                 }, limit);
               })
@@ -753,8 +822,26 @@ var require_adapter = __commonJS({
             record.rejected = normalized.invalid;
             record.status = record.count ? "sources-found" : normalized.invalid ? "invalid-results" : "empty";
             return normalized.streams;
-          } catch (_) {
-            record.status = timedOut ? "timeout" : "error";
+          } catch (err) {
+            if (abortCtrl && !abortCtrl.signal.aborted) {
+              try {
+                abortCtrl.abort();
+              } catch (_) {
+              }
+            }
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+              record.status = "timeout";
+            } else if (err && err.name === "ProviderError") {
+              if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";
+              else if (err.code === "NO_MATCH") record.status = "no-match";
+              else if (err.code === "PARSE_ERROR") record.status = "parse-error";
+              else if (err.code === "TMDB_ERROR") record.status = "tmdb-error";
+              else record.status = "error";
+              if (err.stage) record.stage = err.stage;
+              if (err.code) record.reason = String(err.code).toLowerCase();
+            } else {
+              record.status = "error";
+            }
             return [];
           } finally {
             if (timer !== void 0) clearTimeout(timer);

@@ -204,15 +204,48 @@ var require_http = __commonJS({
       }
       var controller = new AbortController();
       setTimeout(function() {
-        controller.abort();
+        controller.abort(new Error("TIMEOUT"));
       }, ms);
       return controller.signal;
     }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
     function fetchWithTimeout(url, options, ms) {
-      ms = ms || 1e4;
+      ms = ms || 8e3;
       options = options || {};
-      if (!options.signal) {
-        options.signal = timeoutSignal(ms);
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
       }
       if (!options.headers) {
         options.headers = {};
@@ -225,7 +258,180 @@ var require_http = __commonJS({
     module2.exports = {
       DEFAULT_UA,
       timeoutSignal,
+      combineSignals,
       fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/matching.js
+var require_matching = __commonJS({
+  "src/shared/matching.js"(exports2, module2) {
+    var STOP_WORDS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "with",
+      "by",
+      "bir",
+      "ve",
+      "ile",
+      "icin",
+      "de",
+      "da",
+      "izle",
+      "dizi",
+      "dizisi",
+      "film",
+      "filmi",
+      "bolum",
+      "sezon",
+      "hd",
+      "full"
+    ]);
+    function normalizeText(str) {
+      if (!str) return "";
+      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function tokenize(str) {
+      var norm = normalizeText(str);
+      if (!norm) return [];
+      return norm.split(/\s+/).filter(function(w) {
+        return w.length > 1 && !STOP_WORDS.has(w);
+      });
+    }
+    function cleanSlug(slug) {
+      if (!slug) return "";
+      try {
+        var last = String(slug).split("/").filter(Boolean).pop() || "";
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+      } catch (_) {
+        return String(slug).replace(/-/g, " ");
+      }
+    }
+    function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candYear, options) {
+      var opts = options || {};
+      var minCoverage = opts.minCoverage !== void 0 ? opts.minCoverage : 0.75;
+      var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
+      var tNorm = normalizeText(targetTitle);
+      var cNorm = normalizeText(candTitle);
+      var sClean = cleanSlug(candSlug);
+      var sNorm = normalizeText(sClean);
+      if (!tNorm || !cNorm && !sNorm) {
+        return { matched: false, score: 0, reason: "empty_input" };
+      }
+      var targetY = parseInt(targetYear, 10);
+      var candY = parseInt(candYear, 10);
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var diff = Math.abs(targetY - candY);
+        if (diff > 1) {
+          return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (cNorm === tNorm || sNorm === tNorm) {
+        var exactScore = 100;
+        if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+          var yDiff = Math.abs(targetY - candY);
+          if (yDiff === 0) exactScore += 25;
+          else if (yDiff === 1) exactScore += 10;
+        }
+        return { matched: true, score: exactScore, reason: "exact_title_match" };
+      }
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokens = new Set(cTokensList);
+      var matchCount = 0;
+      for (var i = 0; i < tTokens.length; i++) {
+        if (cTokens.has(tTokens[i])) {
+          matchCount++;
+        }
+      }
+      var coverage = tTokens.length > 0 ? matchCount / tTokens.length : 0;
+      if (coverage < minCoverage) {
+        return {
+          matched: false,
+          score: 0,
+          reason: "low_coverage_" + Math.round(coverage * 100) + "pct"
+        };
+      }
+      var score = coverage * 70;
+      var candUniqueTokens = new Set(tokenize(candTitle));
+      var extraTokens = 0;
+      candUniqueTokens.forEach(function(tok) {
+        if (tTokens.indexOf(tok) === -1) extraTokens++;
+      });
+      if (extraTokens > 0) {
+        score -= Math.min(20, extraTokens * 5);
+      }
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var yDiff2 = Math.abs(targetY - candY);
+        if (yDiff2 === 0) score += 20;
+        else if (yDiff2 === 1) score += 10;
+      }
+      if (score >= minScore) {
+        return { matched: true, score, reason: "token_match" };
+      }
+      return { matched: false, score, reason: "score_below_threshold" };
+    }
+    function pickBestCandidate(candidates, targetTitle, targetYear, options) {
+      if (!Array.isArray(candidates) || candidates.length === 0) return null;
+      if (!targetTitle) return null;
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (!cand) continue;
+        var cTitle = cand.title || cand.name || cand.baslik || cand.orijinalBaslik || "";
+        var cSlug = cand.slug || cand.url || cand.href || "";
+        var cYear = cand.year || cand.yil || "";
+        if (!cYear) {
+          var ym = (String(cTitle) + " " + String(cSlug) + " " + String(cand.meta || "")).match(/\b(19\d\d|20\d\d)\b/);
+          if (ym) cYear = ym[1];
+        }
+        var res = calculateMatchScore(targetTitle, targetYear, cTitle, cSlug, cYear, options);
+        if (res.matched && res.score > bestScore) {
+          bestScore = res.score;
+          best = cand;
+        }
+      }
+      return best;
+    }
+    module2.exports = {
+      STOP_WORDS,
+      normalizeText,
+      tokenize,
+      cleanSlug,
+      calculateMatchScore,
+      pickBestCandidate
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
     };
   }
 });
@@ -235,7 +441,9 @@ var require_sinewix = __commonJS({
   "src/sinewix/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
-    var { timeoutSignal } = require_http();
+    var { timeoutSignal, fetchWithTimeout } = require_http();
+    var { calculateMatchScore } = require_matching();
+    var { ProviderError } = require_errors();
     var API_BASE = "https://ydfvfdizipanel.ru/public/api";
     var PANEL_BASE = "https://ydfvfdizipanel.ru";
     var API_KEY = "9iQNC5HQwPlaFuJDkhncJ5XTJ8feGXOJatAA";
@@ -322,27 +530,45 @@ var require_sinewix = __commonJS({
         })
       );
     }
-    function searchAndFetch(title, originalTitle, targetImdb, mediaType, seasonNum, episodeNum, targetYear, targetTmdbId) {
+    function searchAndFetch(title, originalTitle, targetImdb, mediaType, seasonNum, episodeNum, targetYear, targetTmdbId, signal) {
       return __async(this, null, function* () {
         try {
           var query = originalTitle || title || "";
           if (!query) return [];
-          var res = yield fetch(API_BASE + "/search/" + encodeURIComponent(query) + "/" + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8e3) });
+          var res = yield fetchWithTimeout(API_BASE + "/search/" + encodeURIComponent(query) + "/" + API_KEY, { headers: API_HEADERS, signal }, 8e3);
           var data = yield res.json().catch(function() {
             return {};
           });
           var results = data.search || [];
           if (results.length === 0 && title && title.toLowerCase() !== query.toLowerCase()) {
-            var fRes = yield fetch(API_BASE + "/search/" + encodeURIComponent(title) + "/" + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8e3) });
+            var fRes = yield fetchWithTimeout(API_BASE + "/search/" + encodeURIComponent(title) + "/" + API_KEY, { headers: API_HEADERS, signal }, 8e3);
             var fData = yield fRes.json().catch(function() {
               return {};
             });
             results = fData.search || [];
           }
           if (!results || results.length === 0) return [];
+          for (var k = 0; k < results.length; k++) {
+            var it = results[k];
+            var candTitle = it.title || it.name || "";
+            var candYear = (it.release_date || it.first_air_date || "").split("-")[0];
+            var s1 = calculateMatchScore(originalTitle || title, targetYear, candTitle, "", candYear);
+            var s2 = title ? calculateMatchScore(title, targetYear, candTitle, "", candYear) : { matched: false, score: 0 };
+            it._score = Math.max(s1.score || 0, s2.score || 0);
+            it._matched = s1.matched || s2.matched;
+          }
+          var validCandidates = results.filter(function(r) {
+            return r._matched && r._score >= 50;
+          }).sort(function(a, b) {
+            return b._score - a._score;
+          });
+          if (validCandidates.length === 0) {
+            throw new ProviderError("NO_MATCH", "SineWix aday e\u015Fle\u015Fmesi bulunamad\u0131", "matching");
+          }
+          var topCandidates = validCandidates.slice(0, 2);
           var path = mediaType === "movie" ? "media/detail" : "series/show";
-          var detailedItems = yield Promise.all(results.map(function(item) {
-            return fetch(API_BASE + "/" + path + "/" + item.id + "/" + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8e3) }).then(function(r) {
+          var detailedItems = yield Promise.all(topCandidates.map(function(item) {
+            return fetchWithTimeout(API_BASE + "/" + path + "/" + item.id + "/" + API_KEY, { headers: API_HEADERS, signal }, 8e3).then(function(r) {
               return r.json();
             }).catch(function() {
               return null;
@@ -366,7 +592,9 @@ var require_sinewix = __commonJS({
               return originalTitle && itemTitle.includes(originalTitle.toLowerCase().trim()) || title && itemTitle.includes(title.toLowerCase().trim());
             });
           }
-          if (!bestMatch) return [];
+          if (!bestMatch) {
+            throw new ProviderError("NO_MATCH", "SineWix detay e\u015Fle\u015Fmesi bulunamad\u0131", "matching");
+          }
           var vList = [];
           if (mediaType === "movie") {
             vList = bestMatch.videos || [];
@@ -383,6 +611,9 @@ var require_sinewix = __commonJS({
           }
           return yield buildStreams(vList);
         } catch (e2) {
+          if (e2 && (e2.name === "ProviderError" || e2.name === "AbortError" || e2.message === "TIMEOUT")) {
+            throw e2;
+          }
           return [];
         }
       });
@@ -534,8 +765,9 @@ var require_sinewix = __commonJS({
         }
       });
     }
-    function getStreams(id, mediaType, seasonNum, episodeNum) {
+    function getStreams(id, mediaType, seasonNum, episodeNum, options) {
       return __async(this, null, function* () {
+        var signal = options && options.signal;
         try {
           if (typeof id === "object" && id) {
             seasonNum = id.season || seasonNum;
@@ -558,14 +790,14 @@ var require_sinewix = __commonJS({
           }
           if (typeof id === "string" && id.startsWith("sinewix:movie:")) {
             var mId = id.replace("sinewix:movie:", "");
-            var mRes = yield fetch(API_BASE + "/media/detail/" + mId + "/" + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8e3) });
+            var mRes = yield fetchWithTimeout(API_BASE + "/media/detail/" + mId + "/" + API_KEY, { headers: API_HEADERS, signal }, 8e3);
             var mData = yield mRes.json();
             return yield buildStreams(mData.videos || []);
           }
           if (typeof id === "string" && id.startsWith("sinewix:series:")) {
             var showMeta = yield getMeta(id);
             if (showMeta && showMeta.meta && Array.isArray(showMeta.meta.videos) && showMeta.meta.videos.length > 0) {
-              return yield getStreams(showMeta.meta.videos[0].id);
+              return yield getStreams(showMeta.meta.videos[0].id, mediaType, seasonNum, episodeNum, options);
             }
           }
           if (typeof id === "string" && id.startsWith("sinewix:ep:")) {
@@ -573,7 +805,7 @@ var require_sinewix = __commonJS({
             var showId = parts[0];
             var targetSeason = parseInt(parts[1]) || 1;
             var targetEpisode = parseInt(parts[2]) || 1;
-            var sRes = yield fetch(API_BASE + "/series/show/" + showId + "/" + API_KEY, { headers: API_HEADERS, signal: timeoutSignal(8e3) });
+            var sRes = yield fetchWithTimeout(API_BASE + "/series/show/" + showId + "/" + API_KEY, { headers: API_HEADERS, signal }, 8e3);
             var sData = yield sRes.json();
             var targetSeasonObj = (sData.seasons || []).find(function(s) {
               return parseInt(s.season_number) === targetSeason;
@@ -589,15 +821,20 @@ var require_sinewix = __commonJS({
             return [];
           }
           var data = yield resolveTmdbInfo(id, mediaType);
-          if (!data) return [];
+          if (!data) {
+            throw new ProviderError("TMDB_ERROR", "SineWix TMDB bilgisi \xE7\xF6z\xFClemedi", "tmdb");
+          }
           var ot = data.original_title || data.original_name || data.title || data.name;
           var releaseDate = data.release_date || data.first_air_date || "";
           var year = releaseDate ? releaseDate.split("-")[0] : "";
           var targetImdb = data.imdb_id || data.external_ids && data.external_ids.imdb_id;
           var targetTmdbId = data.tmdb_id || data.id;
-          var streams = yield searchAndFetch(data.title || data.name, ot, targetImdb, mediaType, seasonNum || 1, episodeNum || 1, year, targetTmdbId);
+          var streams = yield searchAndFetch(data.title || data.name, ot, targetImdb, mediaType, seasonNum || 1, episodeNum || 1, year, targetTmdbId, signal);
           return streams || [];
         } catch (e) {
+          if (e && (e.name === "ProviderError" || e.name === "AbortError" || e.message === "TIMEOUT")) {
+            throw e;
+          }
           return [];
         }
       });
@@ -643,6 +880,7 @@ var require_adapter = __commonJS({
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -662,13 +900,20 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
+            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
-                return provider2.getStreams(id, type, season, episode);
+                return provider2.getStreams(id, type, season, episode, callOpts);
               }),
               new Promise(function(_, reject) {
                 timer = setTimeout(function() {
                   timedOut = true;
+                  if (abortCtrl) {
+                    try {
+                      abortCtrl.abort(new Error("TIMEOUT"));
+                    } catch (_2) {
+                    }
+                  }
                   reject(new Error("TIMEOUT"));
                 }, limit);
               })
@@ -678,8 +923,26 @@ var require_adapter = __commonJS({
             record.rejected = normalized.invalid;
             record.status = record.count ? "sources-found" : normalized.invalid ? "invalid-results" : "empty";
             return normalized.streams;
-          } catch (_) {
-            record.status = timedOut ? "timeout" : "error";
+          } catch (err) {
+            if (abortCtrl && !abortCtrl.signal.aborted) {
+              try {
+                abortCtrl.abort();
+              } catch (_) {
+              }
+            }
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+              record.status = "timeout";
+            } else if (err && err.name === "ProviderError") {
+              if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";
+              else if (err.code === "NO_MATCH") record.status = "no-match";
+              else if (err.code === "PARSE_ERROR") record.status = "parse-error";
+              else if (err.code === "TMDB_ERROR") record.status = "tmdb-error";
+              else record.status = "error";
+              if (err.stage) record.stage = err.stage;
+              if (err.code) record.reason = String(err.code).toLowerCase();
+            } else {
+              record.status = "error";
+            }
             return [];
           } finally {
             if (timer !== void 0) clearTimeout(timer);

@@ -118,7 +118,7 @@ var require_config = __commonJS({
         },
         movies: {
           filmmodu: {
-            base: "https://filmmodu.icu",
+            base: "https://yabancidizifilmizle.click",
             live: "https://yabancidizifilmizle.click",
             player: "https://pilavyerplay.top"
           },
@@ -368,8 +368,8 @@ var require_filmmodu = __commonJS({
       }
       return _cfgReady;
     }
-    var BASE_URL = "https://www.filmmodu.one";
-    var LIVE_URL = "https://filmmodu.live";
+    var BASE_URL = "https://yabancidizifilmizle.click";
+    var LIVE_URL = "https://yabancidizifilmizle.click";
     var PLAYER_HOST = "https://play2.pilavyerplay.top";
     var TMDB_API_KEY = "500330721680edb6d5f7f12ba7cd9023";
     var HEADERS = {
@@ -444,69 +444,12 @@ var require_filmmodu = __commonJS({
       if (!str) return "";
       return str.toLowerCase().replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s").replace(/ı/g, "i").replace(/ö/g, "o").replace(/ç/g, "c").replace(/â|á|à/g, "a").replace(/î|í/g, "i").replace(/û|ú/g, "u").replace(/[^a-z0-9]/g, "");
     }
-    function findBestMatch(results, searchTitle, year) {
-      var best = pickBestCandidate(results, searchTitle, year, { minCoverage: 0.75, minScore: 50 });
-      if (best && best.href) {
-        console.log("[FilmModu] G\xFCvenilir e\u015Fle\u015Fme bulundu: " + best.href);
-        return best.href;
-      }
-      console.log("[FilmModu] G\xFCvenilir e\u015Fle\u015Fme bulunamad\u0131, atlan\u0131yor");
-      return null;
-    }
-    function searchFilmModu(rawTitle, year) {
-      var title = cleanTitle(rawTitle);
-      if (!title) return Promise.resolve(null);
-      var searchUrl = BASE_URL + "/film-ara?term=" + encodeURIComponent(title);
-      console.log("[FilmModu] Aran\u0131yor: " + searchUrl);
-      return fetch(searchUrl, { headers: HEADERS, redirect: "manual" }).then(function(r) {
-        if (r.status === 301 || r.status === 302) {
-          var loc = r.headers.get("location");
-          if (loc && loc.indexOf("/film-ara") === -1) {
-            return fetch(loc, { headers: HEADERS }).then(function(locRes) {
-              if (locRes.ok) return { redirectUrl: loc, html: null };
-              return { redirectUrl: null, html: null };
-            }).catch(function() {
-              return { redirectUrl: null, html: null };
-            });
-          }
-        }
-        if (!r.ok && r.status !== 301 && r.status !== 302) {
-          return { redirectUrl: null, html: null };
-        }
-        return r.text().then(function(html) {
-          return { redirectUrl: null, html };
-        });
-      }).then(function(result) {
-        if (!result) return null;
-        if (result.redirectUrl) return result.redirectUrl;
-        if (!result.html) return null;
-        var $ = cheerio.load(result.html);
-        if ($("div.alternates").length > 0) {
-          var canonical = $('link[rel="canonical"]').attr("href") || "";
-          if (canonical) {
-            console.log("[FilmModu] Sayfa film sayfas\u0131, canonical: " + canonical);
-            return canonical;
-          }
-          return searchUrl;
-        }
-        var results = [];
-        $("div.movie").each(function() {
-          var a = $(this).find("a").first();
-          var href = a.attr("href") || "";
-          var text = a.text().trim();
-          if (href) results.push({ href, text, title: text });
-        });
-        console.log("[FilmModu] Bulunan sonu\xE7 say\u0131s\u0131: " + results.length);
-        if (results.length === 0) return null;
-        return findBestMatch(results, title, year);
-      }).catch(function(err) {
-        console.log("[FilmModu] Arama hatas\u0131: " + err.message);
-        return null;
-      });
-    }
     function fetchAlternateLinks(filmUrl) {
       console.log("[FilmModu] Film sayfas\u0131: " + filmUrl);
-      return fetch(filmUrl, { headers: HEADERS }).then(function(r) {
+      var sig = timeoutSignal(6e3);
+      var opts = { headers: HEADERS };
+      if (sig) opts.signal = sig;
+      return fetch(filmUrl, opts).then(function(r) {
         if (!r.ok) throw new Error("Film sayfas\u0131 y\xFCklenemedi: " + r.status);
         return r.text();
       }).then(function(html) {
@@ -567,7 +510,10 @@ var require_filmmodu = __commonJS({
     }
     function fetchStreamsFromAlt(altLink, filmUrl) {
       var altHeaders = Object.assign({}, HEADERS, { "Referer": filmUrl });
-      return fetch(altLink.href, { headers: altHeaders }).then(function(r) {
+      var sig = timeoutSignal(6e3);
+      var opts = { headers: altHeaders };
+      if (sig) opts.signal = sig;
+      return fetch(altLink.href, opts).then(function(r) {
         if (!r.ok) return [];
         return r.text();
       }).then(function(altHtml) {
@@ -586,7 +532,10 @@ var require_filmmodu = __commonJS({
           "X-Requested-With": "XMLHttpRequest",
           "Accept": "application/json, text/javascript, */*"
         });
-        return fetch(sourceUrl, { headers: sourceHeaders }).then(function(r) {
+        var srcSig = timeoutSignal(6e3);
+        var srcOpts = { headers: sourceHeaders };
+        if (srcSig) srcOpts.signal = srcSig;
+        return fetch(sourceUrl, srcOpts).then(function(r) {
           if (!r.ok) return [];
           return r.json();
         }).then(function(data) {
@@ -603,7 +552,9 @@ var require_filmmodu = __commonJS({
             "User-Agent": HEADERS["User-Agent"]
           };
           var probeSrc = data.sources[0].src;
-          if (probeSrc.indexOf(".m3u8") === -1) probeSrc = probeSrc + ".m3u8";
+          if (probeSrc.indexOf(".m3u8") === -1) {
+            probeSrc = probeSrc.includes("?") ? probeSrc.replace("?", ".m3u8?") : probeSrc + ".m3u8";
+          }
           return verifySegmentPlayable(probeSrc, fmHeaders).then(function(isPlayable) {
             if (!isPlayable) {
               console.log("[FilmModu] \u274C \xD6l\xFC CDN depolama filtresi: " + altLink.name + " ak\u0131\u015Flar\u0131 elendi.");
@@ -614,12 +565,15 @@ var require_filmmodu = __commonJS({
               if (!source.src) return;
               var qualityLabel = source.label || source.res ? source.res + "p" : "HD";
               var srcUrl = source.src;
-              if (srcUrl.indexOf(".m3u8") === -1) srcUrl = srcUrl + ".m3u8";
+              if (srcUrl.indexOf(".m3u8") === -1) {
+                srcUrl = srcUrl.includes("?") ? srcUrl.replace("?", ".m3u8?") : srcUrl + ".m3u8";
+              }
               var streamObj = {
                 name: "FilmModu",
                 title: altLink.name + " \u2022 " + qualityLabel,
                 url: srcUrl,
                 quality: qualityLabel,
+                resolution: qualityLabel,
                 type: "hls",
                 format: "hls",
                 isHls: true,
@@ -802,15 +756,26 @@ var require_filmmodu = __commonJS({
               "Referer": playerEmbedUrl,
               "User-Agent": HEADERS["User-Agent"]
             };
-            var streamTitle = "FilmModu \u2022 HLS";
-            if (Array.isArray(pData.audios) && pData.audios[0] && pData.audios[0].label) {
-              streamTitle = pData.audios[0].label + " \u2022 1080p FHD";
+            var baseStreamUrl = pData.stream || "";
+            var cleanStreamUrl = baseStreamUrl.replace(/[?&]cdn=\d+/, "").replace(/#.*$/, "");
+            var finalStreamUrl = cleanStreamUrl + (cleanStreamUrl.indexOf("?") !== -1 ? "&" : "?") + "ext=.m3u8";
+            var audios = Array.isArray(pData.audios) && pData.audios.length > 0 ? pData.audios : [{ label: "Orijinal" }];
+            var streamTitle = "FilmModu \u2022 1080p FHD";
+            if (audios.length > 1) {
+              var hasTr = audios.some(function(a) {
+                return /türkçe|turkce|tr\b/i.test(a.label || a.name || "");
+              });
+              var titleLabel = hasTr ? "Dual Ses (TR Dublaj & Orijinal)" : "\xC7oklu Ses";
+              streamTitle = titleLabel + " \u2022 1080p FHD";
+            } else if (audios[0] && audios[0].label) {
+              streamTitle = audios[0].label + " \u2022 1080p FHD";
             }
             var sObj = {
               name: "FilmModu",
               title: streamTitle,
-              url: pData.stream,
-              quality: "HLS",
+              url: finalStreamUrl,
+              quality: "1080p",
+              resolution: "1080p",
               type: "hls",
               format: "hls",
               isHls: true,
@@ -875,56 +840,9 @@ var require_filmmodu = __commonJS({
             return fetchStreamsFromLive(info.titleTr, info.year, "tv", Number(seasonNum), Number(episodeNum));
           });
         }
-        return searchFilmModu(info.titleEn, info.year).then(function(filmUrl2) {
-          if (!filmUrl2 && info.titleTr && info.titleTr !== info.titleEn) {
-            console.log("[FilmModu] Orijinal ba\u015Fl\u0131kla bulunamad\u0131, T\xFCrk\xE7e deneniyor: " + info.titleTr);
-            return searchFilmModu(info.titleTr, info.year);
-          }
-          return filmUrl2;
-        }).then(function(filmUrl2) {
-          if (!filmUrl2) {
-            console.log("[FilmModu] filmmodu.one \xFCzerinde bulunamad\u0131, filmmodu.live deneniyor...");
-            return fetchStreamsFromLive(info.titleEn, info.year).then(function(lStreams) {
-              if (lStreams && lStreams.length > 0) return lStreams;
-              if (info.titleTr && info.titleTr !== info.titleEn) {
-                return fetchStreamsFromLive(info.titleTr, info.year);
-              }
-              return [];
-            });
-          }
-          return fetchAlternateLinks(filmUrl2).then(function(altLinks) {
-            if (altLinks.length === 0) return [];
-            return Promise.all(altLinks.map(function(alt) {
-              return fetchStreamsFromAlt(alt, filmUrl2);
-            })).then(function(results) {
-              var allStreams = [];
-              var seen = /* @__PURE__ */ new Set();
-              results.forEach(function(arr) {
-                if (arr && arr.length > 0) {
-                  arr.forEach(function(s) {
-                    if (s && s.url && !seen.has(s.url)) {
-                      seen.add(s.url);
-                      allStreams.push(s);
-                    }
-                  });
-                }
-              });
-              return allStreams;
-            });
-          }).then(function(validStreams) {
-            if (validStreams && validStreams.length > 0) {
-              console.log("[FilmModu] Toplam do\u011Frulanm\u0131\u015F canl\u0131 stream: " + validStreams.length);
-              return validStreams;
-            }
-            console.log("[FilmModu] filmmodu.one \xFCzerinde canl\u0131 stream bulunamad\u0131, filmmodu.live deneniyor...");
-            return fetchStreamsFromLive(info.titleEn, info.year).then(function(lStreams) {
-              if (lStreams && lStreams.length > 0) return lStreams;
-              if (info.titleTr && info.titleTr !== info.titleEn) {
-                return fetchStreamsFromLive(info.titleTr, info.year);
-              }
-              return [];
-            });
-          });
+        return fetchStreamsFromLive(info.titleEn || info.titleTr, info.year, "movie").then(function(streams) {
+          if (streams.length || !info.titleTr || info.titleTr === info.titleEn) return streams;
+          return fetchStreamsFromLive(info.titleTr, info.year, "movie");
         });
       }).catch(function(err) {
         console.error("[FilmModu] Genel hata: " + err.message);

@@ -24,8 +24,8 @@ function cfgReady() {
 //  FilmModu ağı yedekleme (filmmodu.live) entegrasyonu
 // ============================================================
 
-var BASE_URL = 'https://www.filmmodu.one';
-var LIVE_URL = 'https://filmmodu.live';
+var BASE_URL = 'https://yabancidizifilmizle.click';
+var LIVE_URL = 'https://yabancidizifilmizle.click';
 var PLAYER_HOST = 'https://play2.pilavyerplay.top';
 var TMDB_API_KEY = '500330721680edb6d5f7f12ba7cd9023';
 
@@ -134,12 +134,19 @@ function searchFilmModu(rawTitle, year) {
   var searchUrl = BASE_URL + '/film-ara?term=' + encodeURIComponent(title);
   console.log('[FilmModu] Aranıyor: ' + searchUrl);
 
-  return fetch(searchUrl, { headers: HEADERS, redirect: 'manual' })
+  var sig = timeoutSignal(6000);
+  var fetchOpts = { headers: HEADERS, redirect: 'manual' };
+  if (sig) fetchOpts.signal = sig;
+
+  return fetch(searchUrl, fetchOpts)
     .then(function(r) {
       if (r.status === 301 || r.status === 302) {
         var loc = r.headers.get('location');
         if (loc && loc.indexOf('/film-ara') === -1) {
-          return fetch(loc, { headers: HEADERS })
+          var locSig = timeoutSignal(6000);
+          var locOpts = { headers: HEADERS };
+          if (locSig) locOpts.signal = locSig;
+          return fetch(loc, locOpts)
             .then(function(locRes) {
               if (locRes.ok) return { redirectUrl: loc, html: null };
               return { redirectUrl: null, html: null };
@@ -193,7 +200,11 @@ function searchFilmModu(rawTitle, year) {
 function fetchAlternateLinks(filmUrl) {
   console.log('[FilmModu] Film sayfası: ' + filmUrl);
 
-  return fetch(filmUrl, { headers: HEADERS })
+  var sig = timeoutSignal(6000);
+  var opts = { headers: HEADERS };
+  if (sig) opts.signal = sig;
+
+  return fetch(filmUrl, opts)
     .then(function(r) {
       if (!r.ok) throw new Error('Film sayfası yüklenemedi: ' + r.status);
       return r.text();
@@ -272,8 +283,11 @@ function verifySegmentPlayable(m3u8Url, headers) {
 // ── Yardımcı: Tek bir kaynak linkinden stream çek ───────────
 function fetchStreamsFromAlt(altLink, filmUrl) {
   var altHeaders = Object.assign({}, HEADERS, { 'Referer': filmUrl });
+  var sig = timeoutSignal(6000);
+  var opts = { headers: altHeaders };
+  if (sig) opts.signal = sig;
 
-  return fetch(altLink.href, { headers: altHeaders })
+  return fetch(altLink.href, opts)
     .then(function(r) {
       if (!r.ok) return [];
       return r.text();
@@ -299,7 +313,11 @@ function fetchStreamsFromAlt(altLink, filmUrl) {
         'Accept':           'application/json, text/javascript, */*'
       });
 
-      return fetch(sourceUrl, { headers: sourceHeaders })
+      var srcSig = timeoutSignal(6000);
+      var srcOpts = { headers: sourceHeaders };
+      if (srcSig) srcOpts.signal = srcSig;
+
+      return fetch(sourceUrl, srcOpts)
         .then(function(r) {
           if (!r.ok) return [];
           return r.json();
@@ -324,7 +342,9 @@ function fetchStreamsFromAlt(altLink, filmUrl) {
 
           // İlk kaynağı test ederek CDN depolama düğümünün canlı olduğunu doğrula (503 filtresi)
           var probeSrc = data.sources[0].src;
-          if (probeSrc.indexOf('.m3u8') === -1) probeSrc = probeSrc + '.m3u8';
+          if (probeSrc.indexOf('.m3u8') === -1) {
+            probeSrc = probeSrc.includes('?') ? probeSrc.replace('?', '.m3u8?') : (probeSrc + '.m3u8');
+          }
 
           return verifySegmentPlayable(probeSrc, fmHeaders).then(function(isPlayable) {
             if (!isPlayable) {
@@ -337,17 +357,20 @@ function fetchStreamsFromAlt(altLink, filmUrl) {
               if (!source.src) return;
               var qualityLabel = source.label || source.res ? (source.res + 'p') : 'HD';
               var srcUrl = source.src;
-              if (srcUrl.indexOf('.m3u8') === -1) srcUrl = srcUrl + '.m3u8';
+              if (srcUrl.indexOf('.m3u8') === -1) {
+                srcUrl = srcUrl.includes('?') ? srcUrl.replace('?', '.m3u8?') : (srcUrl + '.m3u8');
+              }
 
               var streamObj = {
-                name:    'FilmModu',
-                title:   altLink.name + ' • ' + qualityLabel,
-                url:     srcUrl,
-                quality: qualityLabel,
-                type:    'hls',
-                format:  'hls',
-                isHls:   true,
-                headers: fmHeaders,
+                name:       'FilmModu',
+                title:      altLink.name + ' • ' + qualityLabel,
+                url:        srcUrl,
+                quality:    qualityLabel,
+                resolution: qualityLabel,
+                type:       'hls',
+                format:     'hls',
+                isHls:      true,
+                headers:    fmHeaders,
                 behaviorHints: {
                   notWebReady: true,
                   proxyHeaders: {
@@ -533,21 +556,31 @@ function fetchStreamsFromLive(rawTitle, year, mediaType, seasonNum, episodeNum) 
                 'User-Agent': HEADERS['User-Agent']
               };
 
-              // pData.stream is one HLS master playlist; its audio renditions
-              // are selected by the player from that playlist, not separate URLs.
-              var streamTitle = 'FilmModu • HLS';
-              if (Array.isArray(pData.audios) && pData.audios[0] && pData.audios[0].label) {
-                streamTitle = pData.audios[0].label + ' • 1080p FHD';
+              // HLS VOD tespiti için &ext=.m3u8 eklenir (ExoPlayer ve libmpv'de doğru HLS tespiti ve siyah ekranı önler)
+              var baseStreamUrl = pData.stream || '';
+              var cleanStreamUrl = baseStreamUrl.replace(/[?&]cdn=\d+/, '').replace(/#.*$/, '');
+              var finalStreamUrl = cleanStreamUrl + (cleanStreamUrl.indexOf('?') !== -1 ? '&' : '?') + 'ext=.m3u8';
+
+              var audios = Array.isArray(pData.audios) && pData.audios.length > 0 ? pData.audios : [{ label: 'Orijinal' }];
+              var streamTitle = 'FilmModu • 1080p FHD';
+              if (audios.length > 1) {
+                var hasTr = audios.some(function(a) { return /türkçe|turkce|tr\b/i.test(a.label || a.name || ''); });
+                var titleLabel = hasTr ? 'Dual Ses (TR Dublaj & Orijinal)' : 'Çoklu Ses';
+                streamTitle = titleLabel + ' • 1080p FHD';
+              } else if (audios[0] && audios[0].label) {
+                streamTitle = audios[0].label + ' • 1080p FHD';
               }
+
               var sObj = {
-                name:    'FilmModu',
-                title:   streamTitle,
-                url:     pData.stream,
-                quality: 'HLS',
-                type:    'hls',
-                format:  'hls',
-                isHls:   true,
-                headers: streamHeaders,
+                name:       'FilmModu',
+                title:      streamTitle,
+                url:        finalStreamUrl,
+                quality:    '1080p',
+                resolution: '1080p',
+                type:       'hls',
+                format:     'hls',
+                isHls:      true,
+                headers:    streamHeaders,
                 behaviorHints: {
                   notWebReady: true,
                   proxyHeaders: { request: streamHeaders }
@@ -617,63 +650,11 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           });
       }
 
-      // Önce orijinal başlıkla ara, bulamazsa Türkçeyle dene
-      return searchFilmModu(info.titleEn, info.year)
-        .then(function(filmUrl) {
-          if (!filmUrl && info.titleTr && info.titleTr !== info.titleEn) {
-            console.log('[FilmModu] Orijinal başlıkla bulunamadı, Türkçe deneniyor: ' + info.titleTr);
-            return searchFilmModu(info.titleTr, info.year);
-          }
-          return filmUrl;
-        })
-        .then(function(filmUrl) {
-          if (!filmUrl) {
-            console.log('[FilmModu] filmmodu.one üzerinde bulunamadı, filmmodu.live deneniyor...');
-            return fetchStreamsFromLive(info.titleEn, info.year).then(function(lStreams) {
-              if (lStreams && lStreams.length > 0) return lStreams;
-              if (info.titleTr && info.titleTr !== info.titleEn) {
-                return fetchStreamsFromLive(info.titleTr, info.year);
-              }
-              return [];
-            });
-          }
-
-          return fetchAlternateLinks(filmUrl)
-            .then(function(altLinks) {
-              if (altLinks.length === 0) return [];
-              return Promise.all(altLinks.map(function(alt) {
-                return fetchStreamsFromAlt(alt, filmUrl);
-              })).then(function(results) {
-                var allStreams = [];
-                var seen = new Set();
-                results.forEach(function(arr) {
-                  if (arr && arr.length > 0) {
-                    arr.forEach(function(s) {
-                      if (s && s.url && !seen.has(s.url)) {
-                        seen.add(s.url);
-                        allStreams.push(s);
-                      }
-                    });
-                  }
-                });
-                return allStreams;
-              });
-            })
-            .then(function(validStreams) {
-              if (validStreams && validStreams.length > 0) {
-                console.log('[FilmModu] Toplam doğrulanmış canlı stream: ' + validStreams.length);
-                return validStreams;
-              }
-              // filmmodu.one üzerinde tüm stream'ler 503/ölü ise filmmodu.live yedek ağını dene
-              console.log('[FilmModu] filmmodu.one üzerinde canlı stream bulunamadı, filmmodu.live deneniyor...');
-              return fetchStreamsFromLive(info.titleEn, info.year).then(function(lStreams) {
-                if (lStreams && lStreams.length > 0) return lStreams;
-                if (info.titleTr && info.titleTr !== info.titleEn) {
-                  return fetchStreamsFromLive(info.titleTr, info.year);
-                }
-                return [];
-              });
-            });
+      // Film (movie): Doğrudan çalışan canlı FilmModu / Pilavyer altyapısını sorgula
+      return fetchStreamsFromLive(info.titleEn || info.titleTr, info.year, 'movie')
+        .then(function(streams) {
+          if (streams.length || !info.titleTr || info.titleTr === info.titleEn) return streams;
+          return fetchStreamsFromLive(info.titleTr, info.year, 'movie');
         });
     })
     .catch(function(err) {

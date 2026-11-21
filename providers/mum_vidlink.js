@@ -137,7 +137,7 @@ var require_config = __commonJS({
         },
         movies: {
           filmmodu: {
-            base: "https://filmmodu.icu",
+            base: "https://yabancidizifilmizle.click",
             live: "https://yabancidizifilmizle.click",
             player: "https://pilavyerplay.top"
           },

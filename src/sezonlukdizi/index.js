@@ -324,6 +324,9 @@ var assembleKey = function(e) {
 async function decryptBysePlayback(playback) {
   try {
     var c = typeof globalThis !== 'undefined' ? (globalThis.crypto || null) : null;
+    if (!c && typeof require === 'function') {
+      try { c = require('crypto').webcrypto; } catch (_) {}
+    }
     if (!c || !c.subtle) return null;
     var keyData = assembleKey(extractKeyParts(playback));
     var iv = decodeBase64ToBytes(playback.iv);
@@ -353,12 +356,17 @@ async function fetchByseStream(iframeUrl) {
     if (!data || !data.playback) return null;
     var decrypted = await decryptBysePlayback(data.playback);
     if (!decrypted || !decrypted.sources || !decrypted.sources.length) return null;
-    var primary = decrypted.sources[0];
+
+    // Pick highest quality source (1080p -> 720p -> last available)
+    var primary = decrypted.sources.find(function(s) { return s.label === '1080p' || s.height >= 1080; })
+      || decrypted.sources.find(function(s) { return s.label === '720p' || s.height >= 720; })
+      || decrypted.sources[decrypted.sources.length - 1];
+
     return {
       url: primary.url,
       type: 'hls',
       referer: origin + '/',
-      quality: primary.label || '1080p'
+      quality: primary.label || (primary.height ? `${primary.height}p` : '1080p')
     };
   } catch (_) {
     return null;
@@ -390,67 +398,109 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       { code: '0', label: 'Dublaj', flag: '🇹🇷 ' }
     ];
 
+    // Parallel fetch both Subtitle and Dubbed alternatives
+    var altsByDil = await Promise.all(
+      dilConfigs.map(async function (dConf) {
+        var alts = await fetchAlternatifler(epInfo.bid, dConf.code, epInfo.episodeUrl);
+        return { dConf: dConf, alts: alts };
+      })
+    );
+
+    // Hosts that require Cloudflare Turnstile human challenge in /ajax/dataEmbed22.asp
+    var TURNSTILE_BLOCKED_HOSTS = ['dzen', 'pixel', 'vidmoly', 'streamruby'];
+
+    // Select viable alternatives to query:
+    // If playable hosts (Filemoon, Sibnet, etc.) exist, skip Turnstile-locked hosts to prevent Cloudflare 1015 rate limit
+    var tasks = [];
+    for (var entry of altsByDil) {
+      var dConf = entry.dConf;
+      var alts = entry.alts || [];
+      if (!alts.length) continue;
+
+      var playableAlts = alts.filter(function (alt) {
+        var b = (alt.baslik || '').toLowerCase();
+        return !TURNSTILE_BLOCKED_HOSTS.some(function (h) { return b.includes(h); });
+      });
+
+      var chosenAlts = playableAlts.length > 0 ? playableAlts : alts.slice(0, 1);
+      for (var alt of chosenAlts) {
+        tasks.push({ alt: alt, dConf: dConf });
+      }
+    }
+
+    // Concurrently resolve embed iframes and decrypt media streams
+    var resolvedEntries = await Promise.all(
+      tasks.map(async function (task) {
+        try {
+          var alt = task.alt;
+          var dConf = task.dConf;
+          var altTitle = (alt.baslik || '').trim();
+          var quality = alt.kalite ? `${alt.kalite === 4 ? '1080p' : alt.kalite === 3 ? '720p' : '480p'}` : '1080p';
+
+          var iframeSrc = await fetchEmbedIframe(alt.id, epInfo.episodeUrl);
+          if (!iframeSrc) return null;
+
+          var resolvedStream = null;
+          var pName = altTitle || 'Kaynak';
+
+          if (iframeSrc.indexOf('vidmoly') !== -1) {
+            pName = 'VidMoly';
+            resolvedStream = await fetchVidMolyStream(iframeSrc);
+          } else if (iframeSrc.indexOf('sibnet') !== -1) {
+            pName = 'Sibnet';
+            resolvedStream = await fetchSibnetStream(iframeSrc);
+          } else if (iframeSrc.indexOf('bysejikuar') !== -1 || iframeSrc.indexOf('filemoon') !== -1) {
+            pName = 'FileMoon';
+            resolvedStream = await fetchByseStream(iframeSrc);
+          } else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(iframeSrc)) {
+            var isHls = /\.m3u8(?:[?#]|$)/i.test(iframeSrc);
+            resolvedStream = {
+              url: iframeSrc,
+              type: isHls ? 'hls' : 'mp4',
+              referer: BASE_URL + '/'
+            };
+          }
+
+          if (resolvedStream && resolvedStream.url && resolvedStream.type !== 'embed') {
+            return {
+              stream: resolvedStream,
+              pName: pName,
+              dConf: dConf,
+              quality: resolvedStream.quality || quality
+            };
+          }
+          return null;
+        } catch (_) {
+          return null;
+        }
+      })
+    );
+
     var allStreams = [];
     var seenUrls = Object.create(null);
 
-    for (var dConf of dilConfigs) {
-      var alts = await fetchAlternatifler(epInfo.bid, dConf.code, epInfo.episodeUrl);
-      if (!alts.length) continue;
+    for (var item of resolvedEntries) {
+      if (!item || !item.stream || !item.stream.url || seenUrls[item.stream.url]) continue;
+      seenUrls[item.stream.url] = true;
 
-      for (var alt of alts) {
-        var altTitle = (alt.baslik || '').trim();
-        var quality = alt.kalite ? `${alt.kalite === 4 ? '1080p' : alt.kalite === 3 ? '720p' : '480p'}` : '1080p';
+      var sHeaders = {
+        'User-Agent': WORKING_HEADERS['User-Agent'],
+        'Referer': item.stream.referer || (BASE_URL + '/')
+      };
 
-        var iframeSrc = await fetchEmbedIframe(alt.id, epInfo.episodeUrl);
-        if (!iframeSrc) continue;
-
-        var resolvedStream = null;
-        var pName = altTitle || 'Kaynak';
-
-        if (iframeSrc.indexOf('vidmoly') !== -1) {
-          pName = 'VidMoly';
-          var vm = await fetchVidMolyStream(iframeSrc);
-          if (vm) resolvedStream = vm;
-        } else if (iframeSrc.indexOf('sibnet') !== -1) {
-          pName = 'Sibnet';
-          var sb = await fetchSibnetStream(iframeSrc);
-          if (sb) resolvedStream = sb;
-        } else if (iframeSrc.indexOf('bysejikuar') !== -1 || iframeSrc.indexOf('filemoon') !== -1) {
-          pName = 'FileMoon';
-          var fm = await fetchByseStream(iframeSrc);
-          if (fm) resolvedStream = fm;
-        } else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(iframeSrc)) {
-          var isHls = /\.m3u8(?:[?#]|$)/i.test(iframeSrc);
-          resolvedStream = {
-            url: iframeSrc,
-            type: isHls ? 'hls' : 'mp4',
-            referer: BASE_URL + '/'
-          };
-        }
-
-        // Only return direct media streams (HLS or MP4); never pass HTML embed webpages to Nuvio
-        if (resolvedStream && resolvedStream.url && resolvedStream.type !== 'embed' && !seenUrls[resolvedStream.url]) {
-          seenUrls[resolvedStream.url] = true;
-          var sHeaders = {
-            'User-Agent': WORKING_HEADERS['User-Agent'],
-            'Referer': resolvedStream.referer || (BASE_URL + '/')
-          };
-
-          allStreams.push({
-            name: displayTitle,
-            title: `⌜ ${PROVIDER_NAME} ⌟ | ${pName} | ${dConf.flag}${dConf.label} · ${seasonNum}. Sezon ${episodeNum}. Bölüm`,
-            url: resolvedStream.url,
-            quality: resolvedStream.quality || quality,
-            type: resolvedStream.type || 'hls',
-            headers: sHeaders,
-            behaviorHints: {
-              notWebReady: true,
-              proxyHeaders: { request: sHeaders }
-            },
-            provider: 'sezonlukdizi'
-          });
-        }
-      }
+      allStreams.push({
+        name: displayTitle,
+        title: `⌜ ${PROVIDER_NAME} ⌟ | ${item.pName} | ${item.dConf.flag}${item.dConf.label} · ${seasonNum}. Sezon ${episodeNum}. Bölüm`,
+        url: item.stream.url,
+        quality: item.quality,
+        type: item.stream.type || 'hls',
+        headers: sHeaders,
+        behaviorHints: {
+          notWebReady: true,
+          proxyHeaders: { request: sHeaders }
+        },
+        provider: 'sezonlukdizi'
+      });
     }
 
     return allStreams;

@@ -506,6 +506,12 @@ var require_sezonlukdizi = __commonJS({
       return __async(this, null, function* () {
         try {
           var c = typeof globalThis !== "undefined" ? globalThis.crypto || null : null;
+          if (!c && typeof require === "function") {
+            try {
+              c = require("crypto").webcrypto;
+            } catch (_) {
+            }
+          }
           if (!c || !c.subtle) return null;
           var keyData = assembleKey(extractKeyParts(playback));
           var iv = decodeBase64ToBytes(playback.iv);
@@ -536,12 +542,16 @@ var require_sezonlukdizi = __commonJS({
           if (!data || !data.playback) return null;
           var decrypted = yield decryptBysePlayback(data.playback);
           if (!decrypted || !decrypted.sources || !decrypted.sources.length) return null;
-          var primary = decrypted.sources[0];
+          var primary = decrypted.sources.find(function(s) {
+            return s.label === "1080p" || s.height >= 1080;
+          }) || decrypted.sources.find(function(s) {
+            return s.label === "720p" || s.height >= 720;
+          }) || decrypted.sources[decrypted.sources.length - 1];
           return {
             url: primary.url,
             type: "hls",
             referer: origin + "/",
-            quality: primary.label || "1080p"
+            quality: primary.label || (primary.height ? `${primary.height}p` : "1080p")
           };
         } catch (_) {
           return null;
@@ -569,59 +579,97 @@ var require_sezonlukdizi = __commonJS({
             { code: "1", label: "Altyaz\u0131l\u0131", flag: "\u{1F310} " },
             { code: "0", label: "Dublaj", flag: "\u{1F1F9}\u{1F1F7} " }
           ];
+          var altsByDil = yield Promise.all(
+            dilConfigs.map(function(dConf2) {
+              return __async(this, null, function* () {
+                var alts2 = yield fetchAlternatifler(epInfo.bid, dConf2.code, epInfo.episodeUrl);
+                return { dConf: dConf2, alts: alts2 };
+              });
+            })
+          );
+          var TURNSTILE_BLOCKED_HOSTS = ["dzen", "pixel", "vidmoly", "streamruby"];
+          var tasks = [];
+          for (var entry of altsByDil) {
+            var dConf = entry.dConf;
+            var alts = entry.alts || [];
+            if (!alts.length) continue;
+            var playableAlts = alts.filter(function(alt2) {
+              var b = (alt2.baslik || "").toLowerCase();
+              return !TURNSTILE_BLOCKED_HOSTS.some(function(h) {
+                return b.includes(h);
+              });
+            });
+            var chosenAlts = playableAlts.length > 0 ? playableAlts : alts.slice(0, 1);
+            for (var alt of chosenAlts) {
+              tasks.push({ alt, dConf });
+            }
+          }
+          var resolvedEntries = yield Promise.all(
+            tasks.map(function(task) {
+              return __async(this, null, function* () {
+                try {
+                  var alt2 = task.alt;
+                  var dConf2 = task.dConf;
+                  var altTitle = (alt2.baslik || "").trim();
+                  var quality = alt2.kalite ? `${alt2.kalite === 4 ? "1080p" : alt2.kalite === 3 ? "720p" : "480p"}` : "1080p";
+                  var iframeSrc = yield fetchEmbedIframe(alt2.id, epInfo.episodeUrl);
+                  if (!iframeSrc) return null;
+                  var resolvedStream = null;
+                  var pName = altTitle || "Kaynak";
+                  if (iframeSrc.indexOf("vidmoly") !== -1) {
+                    pName = "VidMoly";
+                    resolvedStream = yield fetchVidMolyStream(iframeSrc);
+                  } else if (iframeSrc.indexOf("sibnet") !== -1) {
+                    pName = "Sibnet";
+                    resolvedStream = yield fetchSibnetStream(iframeSrc);
+                  } else if (iframeSrc.indexOf("bysejikuar") !== -1 || iframeSrc.indexOf("filemoon") !== -1) {
+                    pName = "FileMoon";
+                    resolvedStream = yield fetchByseStream(iframeSrc);
+                  } else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(iframeSrc)) {
+                    var isHls = /\.m3u8(?:[?#]|$)/i.test(iframeSrc);
+                    resolvedStream = {
+                      url: iframeSrc,
+                      type: isHls ? "hls" : "mp4",
+                      referer: BASE_URL + "/"
+                    };
+                  }
+                  if (resolvedStream && resolvedStream.url && resolvedStream.type !== "embed") {
+                    return {
+                      stream: resolvedStream,
+                      pName,
+                      dConf: dConf2,
+                      quality: resolvedStream.quality || quality
+                    };
+                  }
+                  return null;
+                } catch (_) {
+                  return null;
+                }
+              });
+            })
+          );
           var allStreams = [];
           var seenUrls = /* @__PURE__ */ Object.create(null);
-          for (var dConf of dilConfigs) {
-            var alts = yield fetchAlternatifler(epInfo.bid, dConf.code, epInfo.episodeUrl);
-            if (!alts.length) continue;
-            for (var alt of alts) {
-              var altTitle = (alt.baslik || "").trim();
-              var quality = alt.kalite ? `${alt.kalite === 4 ? "1080p" : alt.kalite === 3 ? "720p" : "480p"}` : "1080p";
-              var iframeSrc = yield fetchEmbedIframe(alt.id, epInfo.episodeUrl);
-              if (!iframeSrc) continue;
-              var resolvedStream = null;
-              var pName = altTitle || "Kaynak";
-              if (iframeSrc.indexOf("vidmoly") !== -1) {
-                pName = "VidMoly";
-                var vm = yield fetchVidMolyStream(iframeSrc);
-                if (vm) resolvedStream = vm;
-              } else if (iframeSrc.indexOf("sibnet") !== -1) {
-                pName = "Sibnet";
-                var sb = yield fetchSibnetStream(iframeSrc);
-                if (sb) resolvedStream = sb;
-              } else if (iframeSrc.indexOf("bysejikuar") !== -1 || iframeSrc.indexOf("filemoon") !== -1) {
-                pName = "FileMoon";
-                var fm = yield fetchByseStream(iframeSrc);
-                if (fm) resolvedStream = fm;
-              } else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(iframeSrc)) {
-                var isHls = /\.m3u8(?:[?#]|$)/i.test(iframeSrc);
-                resolvedStream = {
-                  url: iframeSrc,
-                  type: isHls ? "hls" : "mp4",
-                  referer: BASE_URL + "/"
-                };
-              }
-              if (resolvedStream && resolvedStream.url && resolvedStream.type !== "embed" && !seenUrls[resolvedStream.url]) {
-                seenUrls[resolvedStream.url] = true;
-                var sHeaders = {
-                  "User-Agent": WORKING_HEADERS["User-Agent"],
-                  "Referer": resolvedStream.referer || BASE_URL + "/"
-                };
-                allStreams.push({
-                  name: displayTitle,
-                  title: `\u231C ${PROVIDER_NAME} \u231F | ${pName} | ${dConf.flag}${dConf.label} \xB7 ${seasonNum}. Sezon ${episodeNum}. B\xF6l\xFCm`,
-                  url: resolvedStream.url,
-                  quality: resolvedStream.quality || quality,
-                  type: resolvedStream.type || "hls",
-                  headers: sHeaders,
-                  behaviorHints: {
-                    notWebReady: true,
-                    proxyHeaders: { request: sHeaders }
-                  },
-                  provider: "sezonlukdizi"
-                });
-              }
-            }
+          for (var item of resolvedEntries) {
+            if (!item || !item.stream || !item.stream.url || seenUrls[item.stream.url]) continue;
+            seenUrls[item.stream.url] = true;
+            var sHeaders = {
+              "User-Agent": WORKING_HEADERS["User-Agent"],
+              "Referer": item.stream.referer || BASE_URL + "/"
+            };
+            allStreams.push({
+              name: displayTitle,
+              title: `\u231C ${PROVIDER_NAME} \u231F | ${item.pName} | ${item.dConf.flag}${item.dConf.label} \xB7 ${seasonNum}. Sezon ${episodeNum}. B\xF6l\xFCm`,
+              url: item.stream.url,
+              quality: item.quality,
+              type: item.stream.type || "hls",
+              headers: sHeaders,
+              behaviorHints: {
+                notWebReady: true,
+                proxyHeaders: { request: sHeaders }
+              },
+              provider: "sezonlukdizi"
+            });
           }
           return allStreams;
         } catch (_) {

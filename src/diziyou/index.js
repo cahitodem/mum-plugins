@@ -182,22 +182,53 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     try { playerUrl = new URL(playerUrl, episodeUrl).href; } catch (e) { return []; }
     if (playerUrl.indexOf(BASE_URL + '/player/') !== 0) return [];
 
-    const playerRes = await fetch(playerUrl, { headers: Object.assign({}, WORKING_HEADERS, { Referer: episodeUrl }) });
-    if (!playerRes.ok) return [];
-    const parsed = parsePlayerPage(await playerRes.text(), playerUrl);
-    if (!parsed) return [];
-    const dyHeaders = { Referer: playerUrl };
-    return [{
-      name: displayTitle,
-      title: '⌜ DiziYou ⌟ | ' + displayTitle + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm',
-      url: parsed.url,
-      quality: 'HLS',
-      type: 'hls',
-      provider: 'diziyou',
-      headers: dyHeaders,
-      behaviorHints: { notWebReady: true, proxyHeaders: { request: dyHeaders } },
-      subtitles: parsed.subtitles
-    }];
+    // Dublaj varlık denetimi: #turkceDublaj butonu veya sayfa içi bilgi etiketleri
+    var hasDublaj = $episode('#turkceDublaj').length > 0 ||
+                    /türkçe dublaj|turkce dublaj/i.test($episode('.diziyouOption, .infoelem, .bolumcontent').text());
+
+    var playerTasks = [
+      {
+        langType: 'sub',
+        url: playerUrl,
+        label: hasDublaj ? '🌐 TR Altyazılı' : ''
+      }
+    ];
+
+    if (hasDublaj) {
+      var dubPlayerUrl = playerUrl.replace(/\.html(?=[?#]|$)/i, '_tr.html');
+      if (dubPlayerUrl !== playerUrl) {
+        playerTasks.unshift({
+          langType: 'dub',
+          url: dubPlayerUrl,
+          label: '🇹🇷 Türkçe Dublaj'
+        });
+      }
+    }
+
+    var streams = [];
+    for (const task of playerTasks) {
+      try {
+        const playerRes = await fetch(task.url, { headers: Object.assign({}, WORKING_HEADERS, { Referer: episodeUrl }) });
+        if (!playerRes.ok) continue;
+        const parsed = parsePlayerPage(await playerRes.text(), task.url);
+        if (!parsed) continue;
+        const dyHeaders = { Referer: task.url };
+        const labelPart = task.label ? ' · ' + task.label : '';
+        streams.push({
+          name: displayTitle,
+          title: '⌜ DiziYou ⌟ | ' + displayTitle + labelPart + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm',
+          url: parsed.url,
+          quality: 'HLS',
+          type: 'hls',
+          provider: 'diziyou',
+          headers: dyHeaders,
+          behaviorHints: { notWebReady: true, proxyHeaders: { request: dyHeaders } },
+          subtitles: parsed.subtitles
+        });
+      } catch (_) {}
+    }
+
+    return streams;
   } catch (err) {
     return [];
   }

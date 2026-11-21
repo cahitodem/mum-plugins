@@ -42,6 +42,29 @@ test('DiziYou current .love selectors follow the actual show episode and player 
  const result=await provider.getStreams('123','tv',1,2);
  assert.equal(result.length,1);assert.equal(result[0].url,'https://storage.diziyou.love/episodes/987/play.m3u8');assert.equal(result[0].subtitles.length,2);assert.ok(result[0].headers.Referer.includes('/player/987.html'));assert.equal(requests.length,5);assert.match(reports.at(-1),/sources-found/);
 });
+test('DiziYou resolves both Turkish Dubbed and Subtitled streams when dubbing is available',async()=>{
+ const requests=[];
+ const scraper=manifest.scrapers.find(s=>s.id==='mum_diziyou');
+ const {provider,reports}=load(scraper,async url=>{
+  requests.push(url);
+  if(url.includes('api.themoviedb.org'))return {ok:true,json:async()=>({name:'Fixture Show',original_name:'Fixture Show'})};
+  if(url.includes('?s='))return {ok:true,text:async()=>'<main id="content"><div class="cat-img"><a href="https://www.diziyou.love/fixture-show2/"><img alt="Fixture Show"><span id="dizi-ismi">Fixture Show</span></a></div></main>'};
+  if(url==='https://www.diziyou.love/fixture-show2/')return {ok:true,text:async()=>'<main id="content"><a href="https://www.diziyou.love/fixture-show-1-sezon-2-bolum/">1. Sezon 2. Bölüm</a></main>'};
+  if(url==='https://www.diziyou.love/fixture-show-1-sezon-2-bolum/')return {ok:true,text:async()=>'<div class="singlecontent"><span id="turkceAltyazili" class="diziyouOption">Türkçe Altyazılı</span><span id="turkceDublaj" class="diziyouOption">Türkçe Dublaj</span><iframe id="diziyouPlayer" src="https://www.diziyou.love/player/987.html"></iframe></div>'};
+  if(url==='https://www.diziyou.love/player/987_tr.html')return {ok:true,text:async()=>'<video><source id="diziyouSource" src="https://storage.diziyou.love/episodes/987_tr/play.m3u8"></video><script>DYSubtitles.init(player,{trUrl:"https://storage.diziyou.love/subtitles/987_tr/tr.vtt"});</script>'};
+  if(url==='https://www.diziyou.love/player/987.html')return {ok:true,text:async()=>'<video><source id="diziyouSource" src="https://storage.diziyou.love/episodes/987/play.m3u8"></video><script>DYSubtitles.init(player,{trUrl:"https://storage.diziyou.love/subtitles/987/tr.vtt",enUrl:"https://storage.diziyou.love/subtitles/987/en.vtt"});</script>'};
+  throw Error('Unexpected fixture request: ' + url);
+ });
+ const result=await provider.getStreams('123','tv',1,2);
+ assert.equal(result.length,2);
+ assert.equal(result[0].url,'https://storage.diziyou.love/episodes/987_tr/play.m3u8');
+ assert.match(result[0].title,/Türkçe Dublaj/);
+ assert.ok(result[0].headers.Referer.includes('/player/987_tr.html'));
+ assert.equal(result[1].url,'https://storage.diziyou.love/episodes/987/play.m3u8');
+ assert.match(result[1].title,/TR Altyazılı/);
+ assert.ok(result[1].headers.Referer.includes('/player/987.html'));
+ assert.match(reports.at(-1),/sources-found/);
+});
 test('FilmModu resolves TV metadata, exact season episode, and page-selected player host',async()=>{
  const requests=[];
  const scraper=manifest.scrapers.find(s=>s.id==='mum_filmmodu');

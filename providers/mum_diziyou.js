@@ -381,22 +381,48 @@ var require_diziyou = __commonJS({
             return [];
           }
           if (playerUrl.indexOf(BASE_URL + "/player/") !== 0) return [];
-          const playerRes = yield fetch(playerUrl, { headers: Object.assign({}, WORKING_HEADERS, { Referer: episodeUrl }) });
-          if (!playerRes.ok) return [];
-          const parsed = parsePlayerPage(yield playerRes.text(), playerUrl);
-          if (!parsed) return [];
-          const dyHeaders = { Referer: playerUrl };
-          return [{
-            name: displayTitle,
-            title: "\u231C DiziYou \u231F | " + displayTitle + " \xB7 " + seasonNum + ". Sezon " + episodeNum + ". B\xF6l\xFCm",
-            url: parsed.url,
-            quality: "HLS",
-            type: "hls",
-            provider: "diziyou",
-            headers: dyHeaders,
-            behaviorHints: { notWebReady: true, proxyHeaders: { request: dyHeaders } },
-            subtitles: parsed.subtitles
-          }];
+          var hasDublaj = $episode("#turkceDublaj").length > 0 || /türkçe dublaj|turkce dublaj/i.test($episode(".diziyouOption, .infoelem, .bolumcontent").text());
+          var playerTasks = [
+            {
+              langType: "sub",
+              url: playerUrl,
+              label: hasDublaj ? "\u{1F310} TR Altyaz\u0131l\u0131" : ""
+            }
+          ];
+          if (hasDublaj) {
+            var dubPlayerUrl = playerUrl.replace(/\.html(?=[?#]|$)/i, "_tr.html");
+            if (dubPlayerUrl !== playerUrl) {
+              playerTasks.unshift({
+                langType: "dub",
+                url: dubPlayerUrl,
+                label: "\u{1F1F9}\u{1F1F7} T\xFCrk\xE7e Dublaj"
+              });
+            }
+          }
+          var streams = [];
+          for (const task of playerTasks) {
+            try {
+              const playerRes = yield fetch(task.url, { headers: Object.assign({}, WORKING_HEADERS, { Referer: episodeUrl }) });
+              if (!playerRes.ok) continue;
+              const parsed = parsePlayerPage(yield playerRes.text(), task.url);
+              if (!parsed) continue;
+              const dyHeaders = { Referer: task.url };
+              const labelPart = task.label ? " \xB7 " + task.label : "";
+              streams.push({
+                name: displayTitle,
+                title: "\u231C DiziYou \u231F | " + displayTitle + labelPart + " \xB7 " + seasonNum + ". Sezon " + episodeNum + ". B\xF6l\xFCm",
+                url: parsed.url,
+                quality: "HLS",
+                type: "hls",
+                provider: "diziyou",
+                headers: dyHeaders,
+                behaviorHints: { notWebReady: true, proxyHeaders: { request: dyHeaders } },
+                subtitles: parsed.subtitles
+              });
+            } catch (_) {
+            }
+          }
+          return streams;
         } catch (err) {
           return [];
         }

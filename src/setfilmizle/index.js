@@ -383,6 +383,7 @@ async function extractStreamsFromContentPage(pageUrl) {
                     quality: '1080p',
                     provider: 'setfilmizle',
                     headers: sHeaders,
+                    type: 'hls',
                     format: 'hls',
                     isHls: true,
                     behaviorHints: {

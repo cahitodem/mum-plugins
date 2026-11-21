@@ -50,6 +50,9 @@ var require_config = __commonJS({
           diziyou: {
             base: "https://www.diziyou.love",
             storage: "https://storage.diziyou.love"
+          },
+          sezonlukdizi: {
+            base: "https://sezonlukdizi.cc"
           }
         },
         movies: {

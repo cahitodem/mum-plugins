@@ -102,6 +102,9 @@ var require_config = __commonJS({
           diziyou: {
             base: "https://www.diziyou.love",
             storage: "https://storage.diziyou.love"
+          },
+          sezonlukdizi: {
+            base: "https://sezonlukdizi.cc"
           }
         },
         movies: {
@@ -520,6 +523,7 @@ var require_setfilmizle = __commonJS({
                   quality: "1080p",
                   provider: "setfilmizle",
                   headers: sHeaders,
+                  type: "hls",
                   format: "hls",
                   isHls: true,
                   behaviorHints: {

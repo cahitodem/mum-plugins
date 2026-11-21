@@ -101,6 +101,17 @@
       "playback": "unverified"
     },
     {
+      "key": "sezonlukdizi",
+      "id": "mum_sezonlukdizi",
+      "name": "SezonlukDizi",
+      "supportedTypes": [
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
       "key": "vidlink",
       "id": "mum_vidlink",
       "name": "Vidlink",

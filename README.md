@@ -43,7 +43,7 @@ Aşağıdaki bilgiler kullanıcının **Windows Nuvio + Anthology 1.8.39** testl
 
 | Sağlayıcı | Kaynak araması | Oynatma |
 |---|---|---|
-| Anthology M3U, DDiziBox, HDFilmDelisi, HDFilmIzle, SetFilmIzle, Vidlink, Vidmody, Webteizle | Kaynak dönmüş | Doğrulanmadı |
+| Anthology M3U, DDiziBox, HDFilmDelisi, HDFilmIzle, SetFilmIzle, SezonlukDizi, Vidlink, Vidmody, Webteizle | Kaynak dönmüş | Doğrulanmadı |
 | DiziYou | Güncel `.love` akışıyla kaynak bulundu | Oynatma doğrulanmadı |
 | FilmModu | GOT S1E1 kaynak bulundu; TV desteği eklendi | Oynatma doğrulanmadı |
 | HDFilmCehennemi | Kullanıcı testinde boş | Doğrulanmadı |

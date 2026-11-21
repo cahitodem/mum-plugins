@@ -606,30 +606,26 @@ function fetchStreamsFromLive(rawTitle, year, mediaType, seasonNum, episodeNum) 
                 'User-Agent': HEADERS['User-Agent']
               };
 
-              var audios = Array.isArray(pData.audios) && pData.audios.length > 0
-                ? pData.audios
-                : [{ label: 'Türkçe Dublaj' }];
-
-              audios.forEach(function(aud) {
-                var sObj = {
-                  name:    'FilmModu',
-                  title:   (aud.label || 'Türkçe Dublaj') + ' • 1080p FHD',
-                  url:     pData.stream,
-                  quality: '1080p',
-                  type:    'hls',
-                  format:  'hls',
-                  isHls:   true,
-                  headers: streamHeaders,
-                  behaviorHints: {
-                    notWebReady: true,
-                    proxyHeaders: { request: streamHeaders }
-                  }
-                };
-                if (subtitles.length > 0) {
-                  sObj.subtitles = subtitles;
+              // pData.stream is one HLS master playlist; its audio renditions
+              // are selected by the player from that playlist, not separate URLs.
+              var sObj = {
+                name:    'FilmModu',
+                title:   'FilmModu • HLS',
+                url:     pData.stream,
+                quality: 'HLS',
+                type:    'hls',
+                format:  'hls',
+                isHls:   true,
+                headers: streamHeaders,
+                behaviorHints: {
+                  notWebReady: true,
+                  proxyHeaders: { request: streamHeaders }
                 }
-                liveStreams.push(sObj);
-              });
+              };
+              if (subtitles.length > 0) {
+                sObj.subtitles = subtitles;
+              }
+              liveStreams.push(sObj);
 
               console.log('[FilmModu.live] Çözülen akış sayısı: ' + liveStreams.length);
               return liveStreams;

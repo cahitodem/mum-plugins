@@ -214,6 +214,12 @@ function fetchWithTimeout(url, options, ms) {
   return fetch(url, opts);
 }
 
+function isAccessBlocked(res) {
+  // A forbidden response is an upstream access decision. Trying more guessed
+  // slugs against the same host cannot make that response useful.
+  return !!res && res.status === 403;
+}
+
 function slugify(text) {
   if (!text) return '';
   return text.toString().toLowerCase()
@@ -358,6 +364,7 @@ async function findMovieSlug(tmdbIdOrSlug) {
     if (!cand) continue;
     try {
       var res = await fetchWithTimeout(BASE_URL + '/' + cand + '/', { headers: HEADERS }, 5000);
+      if (isAccessBlocked(res)) return null;
       if (res.status === 200) {
         var html = await res.text();
         var imdbMatch = html.match(/https:\/\/(?:www\.)?imdb\.com\/title\/(tt\d+)/i);
@@ -613,6 +620,7 @@ async function getCatalog(args) {
     for (var i = 0; i < pages.length; i++) {
       try {
         var res = await fetchWithTimeout(pages[i], { headers: HEADERS }, 8000);
+        if (isAccessBlocked(res)) break;
         if (!res.ok) continue;
         var html = await res.text();
 

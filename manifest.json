@@ -101,6 +101,17 @@
       "enabled": true
     },
     {
+      "id": "mum_sezonlukdizi",
+      "name": "SezonlukDizi",
+      "version": "0.1.1",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_sezonlukdizi.js",
+      "supportedTypes": [
+        "tv"
+      ],
+      "enabled": true
+    },
+    {
       "id": "mum_vidlink",
       "name": "Vidlink",
       "version": "0.1.1",

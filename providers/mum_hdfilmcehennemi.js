@@ -50,6 +50,9 @@ var require_config = __commonJS({
           diziyou: {
             base: "https://www.diziyou.love",
             storage: "https://storage.diziyou.love"
+          },
+          sezonlukdizi: {
+            base: "https://sezonlukdizi.cc"
           }
         },
         movies: {
@@ -361,6 +364,9 @@ var require_hdfilmcehennemi = __commonJS({
       }
       return fetch(url, opts);
     }
+    function isAccessBlocked(res) {
+      return !!res && res.status === 403;
+    }
     function slugify(text) {
       if (!text) return "";
       return text.toString().toLowerCase().replace(/[ıİ]/g, "i").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[çÇ]/g, "c").replace(/[âÂ]/g, "a").replace(/[îÎ]/g, "i").replace(/[ûÛ]/g, "u").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -475,6 +481,7 @@ var require_hdfilmcehennemi = __commonJS({
           if (!cand) continue;
           try {
             var res = yield fetchWithTimeout(BASE_URL + "/" + cand + "/", { headers: HEADERS }, 5e3);
+            if (isAccessBlocked(res)) return null;
             if (res.status === 200) {
               var html = yield res.text();
               var imdbMatch = html.match(/https:\/\/(?:www\.)?imdb\.com\/title\/(tt\d+)/i);
@@ -702,6 +709,7 @@ var require_hdfilmcehennemi = __commonJS({
           for (var i = 0; i < pages.length; i++) {
             try {
               var res = yield fetchWithTimeout(pages[i], { headers: HEADERS }, 8e3);
+              if (isAccessBlocked(res)) break;
               if (!res.ok) continue;
               var html = yield res.text();
               var matches = Array.from(html.matchAll(/<a[^>]+href="https:\/\/www\.hdfilmcehennemi\.nl\/([^"\/]+)\/"[^>]*title="([^"]*)"/gi));

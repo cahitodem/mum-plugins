@@ -102,6 +102,9 @@ var require_config = __commonJS({
           diziyou: {
             base: "https://www.diziyou.love",
             storage: "https://storage.diziyou.love"
+          },
+          sezonlukdizi: {
+            base: "https://sezonlukdizi.cc"
           }
         },
         movies: {
@@ -704,27 +707,24 @@ var require_filmmodu = __commonJS({
               "Referer": playerEmbedUrl,
               "User-Agent": HEADERS["User-Agent"]
             };
-            var audios = Array.isArray(pData.audios) && pData.audios.length > 0 ? pData.audios : [{ label: "T\xFCrk\xE7e Dublaj" }];
-            audios.forEach(function(aud) {
-              var sObj = {
-                name: "FilmModu",
-                title: (aud.label || "T\xFCrk\xE7e Dublaj") + " \u2022 1080p FHD",
-                url: pData.stream,
-                quality: "1080p",
-                type: "hls",
-                format: "hls",
-                isHls: true,
-                headers: streamHeaders,
-                behaviorHints: {
-                  notWebReady: true,
-                  proxyHeaders: { request: streamHeaders }
-                }
-              };
-              if (subtitles.length > 0) {
-                sObj.subtitles = subtitles;
+            var sObj = {
+              name: "FilmModu",
+              title: "FilmModu \u2022 HLS",
+              url: pData.stream,
+              quality: "HLS",
+              type: "hls",
+              format: "hls",
+              isHls: true,
+              headers: streamHeaders,
+              behaviorHints: {
+                notWebReady: true,
+                proxyHeaders: { request: streamHeaders }
               }
-              liveStreams.push(sObj);
-            });
+            };
+            if (subtitles.length > 0) {
+              sObj.subtitles = subtitles;
+            }
+            liveStreams.push(sObj);
             console.log("[FilmModu.live] \xC7\xF6z\xFClen ak\u0131\u015F say\u0131s\u0131: " + liveStreams.length);
             return liveStreams;
           });

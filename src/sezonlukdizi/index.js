@@ -271,6 +271,100 @@ async function fetchSibnetStream(iframeUrl) {
   }
 }
 
+// ── Filemoon / Byse Encrypted Stream Decryptor ────────────────────────
+var decodeBase64ToBytes = function(e) {
+  var t = e.replace(/-/g, "+").replace(/_/g, "/"),
+      r = t.length % 4 === 0 ? 0 : 4 - t.length % 4,
+      n = t + "=".repeat(r);
+  var o;
+  if (typeof atob === "function") o = atob(n);
+  else if (typeof Buffer !== "undefined") o = Buffer.from(n, "base64").toString("binary");
+  else return new Uint8Array(0);
+  var a = new Uint8Array(o.length);
+  for (var i = 0; i < o.length; i++) a[i] = o.charCodeAt(i);
+  return a;
+};
+
+var getVersionPairs = function() {
+  var e = {};
+  for (var n = 1; n <= 20; n += 1) {
+    var o = n ^ 0, a = (31 - n) ^ 0;
+    e[String(n)] = [o, a];
+  }
+  return e;
+};
+
+var selectKeyIndices = function(e, t) {
+  var r = typeof e === "string" ? e.trim() : "", o = getVersionPairs()[r];
+  if (!o) return [];
+  var a = o[0], i = o[1];
+  return a < 1 || i < 1 || a > t || i > t ? [] : [a, i];
+};
+
+var extractKeyParts = function(e) {
+  var t = Array.isArray(e.key_parts) ? e.key_parts : [],
+      r = selectKeyIndices(e.version, t.length);
+  if (r.length === 0) return t;
+  var n = r.map(function(o) { return Number(o); })
+           .filter(function(o) { return Number.isInteger(o) && o >= 1 && o <= t.length; })
+           .map(function(o) { return t[o - 1]; })
+           .filter(function(o) { return typeof o === "string" && o.length > 0; });
+  return n.length > 0 ? n : t;
+};
+
+var assembleKey = function(e) {
+  var t = e.filter(function(a) { return typeof a === "string" && a.length > 0; }).map(decodeBase64ToBytes),
+      r = t.reduce(function(a, i) { return a + i.length; }, 0),
+      n = new Uint8Array(r);
+  var o = 0;
+  for (var a of t) { n.set(a, o); o += a.length; }
+  return n;
+};
+
+async function decryptBysePlayback(playback) {
+  try {
+    var c = typeof globalThis !== 'undefined' ? (globalThis.crypto || null) : null;
+    if (!c || !c.subtle) return null;
+    var keyData = assembleKey(extractKeyParts(playback));
+    var iv = decodeBase64ToBytes(playback.iv);
+    var payload = decodeBase64ToBytes(playback.payload);
+    var key = await c.subtle.importKey("raw", keyData, "AES-GCM", false, ["decrypt"]);
+    var decrypted = await c.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, payload);
+    return JSON.parse(new TextDecoder().decode(decrypted));
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchByseStream(iframeUrl) {
+  try {
+    var m = iframeUrl.match(/\/e\/([a-zA-Z0-9]+)/i);
+    if (!m) return null;
+    var code = m[1];
+    var origin = new URL(iframeUrl).origin;
+    var apiRes = await fetch(`${origin}/api/videos/${code}`, {
+      headers: {
+        'User-Agent': WORKING_HEADERS['User-Agent'],
+        'Referer': iframeUrl
+      }
+    });
+    if (!apiRes.ok) return null;
+    var data = await apiRes.json();
+    if (!data || !data.playback) return null;
+    var decrypted = await decryptBysePlayback(data.playback);
+    if (!decrypted || !decrypted.sources || !decrypted.sources.length) return null;
+    var primary = decrypted.sources[0];
+    return {
+      url: primary.url,
+      type: 'hls',
+      referer: origin + '/',
+      quality: primary.label || '1080p'
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   try {
     if (mediaType !== 'tv' && mediaType !== 'series') return [];
@@ -321,6 +415,10 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           pName = 'Sibnet';
           var sb = await fetchSibnetStream(iframeSrc);
           if (sb) resolvedStream = sb;
+        } else if (iframeSrc.indexOf('bysejikuar') !== -1 || iframeSrc.indexOf('filemoon') !== -1) {
+          pName = 'FileMoon';
+          var fm = await fetchByseStream(iframeSrc);
+          if (fm) resolvedStream = fm;
         } else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(iframeSrc)) {
           var isHls = /\.m3u8(?:[?#]|$)/i.test(iframeSrc);
           resolvedStream = {
@@ -328,16 +426,10 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             type: isHls ? 'hls' : 'mp4',
             referer: BASE_URL + '/'
           };
-        } else if (iframeSrc.indexOf('bysejikuar') !== -1 || iframeSrc.indexOf('filemoon') !== -1) {
-          pName = 'FileMoon';
-          resolvedStream = {
-            url: iframeSrc,
-            type: 'embed',
-            referer: BASE_URL + '/'
-          };
         }
 
-        if (resolvedStream && resolvedStream.url && !seenUrls[resolvedStream.url]) {
+        // Only return direct media streams (HLS or MP4); never pass HTML embed webpages to Nuvio
+        if (resolvedStream && resolvedStream.url && resolvedStream.type !== 'embed' && !seenUrls[resolvedStream.url]) {
           seenUrls[resolvedStream.url] = true;
           var sHeaders = {
             'User-Agent': WORKING_HEADERS['User-Agent'],
@@ -348,7 +440,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             name: displayTitle,
             title: `⌜ ${PROVIDER_NAME} ⌟ | ${pName} | ${dConf.flag}${dConf.label} · ${seasonNum}. Sezon ${episodeNum}. Bölüm`,
             url: resolvedStream.url,
-            quality: quality,
+            quality: resolvedStream.quality || quality,
             type: resolvedStream.type || 'hls',
             headers: sHeaders,
             behaviorHints: {

@@ -1,5 +1,6 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { pickBestCandidate } = require("../shared/matching.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -116,53 +117,11 @@ function slugFromHref(href) {
 }
 
 function findBestMatch(results, searchTitle, year) {
-  var normalizedSearch = normalizeForUrl(searchTitle);
-  var slugSearch = normalizeForUrl(slugFromHref(searchTitle));
-
-  // 0. Slug tam eşleşme (en güvenilir) — ör. "the-matrix" vs "the-matrix-reloaded"
-  for (var s = 0; s < results.length; s++) {
-    var slugNorm = normalizeForUrl(slugFromHref(results[s].href));
-    if (slugNorm === normalizedSearch || slugNorm === slugSearch) {
-      console.log('[FilmModu] Slug tam eşleşti: ' + results[s].href);
-      return results[s].href;
-    }
+  var best = pickBestCandidate(results, searchTitle, year, { minCoverage: 0.75, minScore: 50 });
+  if (best && best.href) {
+    console.log('[FilmModu] Güvenilir eşleşme bulundu: ' + best.href);
+    return best.href;
   }
-  // 1. Hem başlık hem yıl URL'de eşleşiyor mu?
-  if (year) {
-    for (var i = 0; i < results.length; i++) {
-      var normalizedHref = normalizeForUrl(results[i].href);
-      if (normalizedHref.indexOf(normalizedSearch) !== -1 && results[i].href.indexOf(year) !== -1) {
-        console.log('[FilmModu] Başlık+yıl eşleşti: ' + results[i].href);
-        return results[i].href;
-      }
-    }
-  }
-
-  // 2. Sadece başlık URL'de eşleşiyor mu? (slug içinde, en kısa eşleşmeyi tercih et)
-  var best = null;
-  var bestLen = Infinity;
-  for (var j = 0; j < results.length; j++) {
-    var normalizedHref2 = normalizeForUrl(results[j].href);
-    if (normalizedHref2.indexOf(normalizedSearch) !== -1) {
-      var len = normalizedHref2.length;
-      if (len < bestLen) { best = results[j].href; bestLen = len; }
-    }
-  }
-  if (best) {
-    console.log('[FilmModu] Başlık eşleşti (en kısa): ' + best);
-    return best;
-  }
-
-  // 3. Sadece yıl URL'de eşleşiyor mu?
-  if (year) {
-    for (var k = 0; k < results.length; k++) {
-      if (results[k].href.indexOf(year) !== -1) {
-        console.log('[FilmModu] Yıl eşleşti: ' + results[k].href);
-        return results[k].href;
-      }
-    }
-  }
-
   console.log('[FilmModu] Güvenilir eşleşme bulunamadı, atlanıyor');
   return null;
 }
@@ -216,7 +175,7 @@ function searchFilmModu(rawTitle, year) {
         var a    = $(this).find('a').first();
         var href = a.attr('href') || '';
         var text = a.text().trim();
-        if (href) results.push({ href: href, text: text });
+        if (href) results.push({ href: href, text: text, title: text });
       });
 
       console.log('[FilmModu] Bulunan sonuç sayısı: ' + results.length);
@@ -477,44 +436,12 @@ function fetchStreamsFromLive(rawTitle, year, mediaType, seasonNum, episodeNum) 
         }
       });
 
-      var stopWords = ['the', 'a', 'an', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'bir', 've', 'ile', 'icin', 'de', 'da'];
-      var meaningfulWords = q.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 2 && stopWords.indexOf(w) === -1; });
-      var words = meaningfulWords.length > 0 ? meaningfulWords : q.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 2; });
-      var bestScore = -1;
-      for (var i = 0; i < candidates.length; i++) {
-        var cand = candidates[i];
-        var normH = normalizeForUrl(cand.href);
-        var normT = normalizeForUrl(cand.title);
-        var score = 0;
-
-        var fullMatch = normH.indexOf(normQ) !== -1 || normT.indexOf(normQ) !== -1;
-        if (fullMatch) {
-          score += 10;
-        }
-
-        var matchedWords = words.filter(function(w) {
-          var nw = normalizeForUrl(w);
-          return normH.indexOf(nw) !== -1 || normT.indexOf(nw) !== -1;
-        });
-
-        if (!fullMatch && matchedWords.length === 0) {
-          continue;
-        }
-
-        if (year && cand.year && cand.year === year) {
-          score += 8;
-        } else if (year && cand.href.indexOf(year) !== -1) {
-          score += 5;
-        }
-
-        score += matchedWords.length * 3;
-
-        if (score > bestScore && score >= 3) {
-          bestScore = score;
-          filmHref = cand.href;
-        }
+      var bestCand = pickBestCandidate(candidates, q, year, { minCoverage: 0.75, minScore: 50 });
+      if (!bestCand || !bestCand.href) {
+        console.log('[FilmModu.live] Güvenilir eşleşme bulunamadı, atlanıyor');
+        return [];
       }
-      if (!filmHref) return [];
+      filmHref = bestCand.href;
 
       console.log('[FilmModu.live] Film bulundu: ' + filmHref);
       var sigPage = timeoutSignal(12000);
@@ -608,9 +535,13 @@ function fetchStreamsFromLive(rawTitle, year, mediaType, seasonNum, episodeNum) 
 
               // pData.stream is one HLS master playlist; its audio renditions
               // are selected by the player from that playlist, not separate URLs.
+              var streamTitle = 'FilmModu • HLS';
+              if (Array.isArray(pData.audios) && pData.audios[0] && pData.audios[0].label) {
+                streamTitle = pData.audios[0].label + ' • 1080p FHD';
+              }
               var sObj = {
                 name:    'FilmModu',
-                title:   'FilmModu • HLS',
+                title:   streamTitle,
                 url:     pData.stream,
                 quality: 'HLS',
                 type:    'hls',

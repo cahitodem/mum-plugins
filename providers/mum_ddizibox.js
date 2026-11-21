@@ -433,7 +433,10 @@ var require_ddizibox = __commonJS({
             targetWords.forEach(function(tw) {
               if (candWords.indexOf(tw) !== -1) matchCount++;
             });
-            score += matchCount * 12;
+            var coverage = targetWords.length > 0 ? matchCount / targetWords.length : 0;
+            if (coverage >= 0.75) {
+              score += matchCount * 12;
+            }
           }
           var candYear = 0;
           var metaYearMatch = String(cand.meta || "").match(/\b(19\d\d|20\d\d)\b/);
@@ -445,7 +448,7 @@ var require_ddizibox = __commonJS({
           if (targetYear && candYear) {
             if (Math.abs(targetYear - candYear) === 0) score += 25;
             else if (Math.abs(targetYear - candYear) <= 1) score += 10;
-            else score -= 30;
+            else score -= 50;
           }
           if (score > bestScore && score >= 20) {
             bestScore = score;

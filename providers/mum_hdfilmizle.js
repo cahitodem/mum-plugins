@@ -177,11 +177,164 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/matching.js
+var require_matching = __commonJS({
+  "src/shared/matching.js"(exports2, module2) {
+    var STOP_WORDS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "with",
+      "by",
+      "bir",
+      "ve",
+      "ile",
+      "icin",
+      "de",
+      "da",
+      "izle",
+      "dizi",
+      "dizisi",
+      "film",
+      "filmi",
+      "bolum",
+      "sezon",
+      "hd",
+      "full"
+    ]);
+    function normalizeText(str) {
+      if (!str) return "";
+      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function tokenize(str) {
+      var norm = normalizeText(str);
+      if (!norm) return [];
+      return norm.split(/\s+/).filter(function(w) {
+        return w.length > 1 && !STOP_WORDS.has(w);
+      });
+    }
+    function cleanSlug(slug) {
+      if (!slug) return "";
+      try {
+        var last = String(slug).split("/").filter(Boolean).pop() || "";
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+      } catch (_) {
+        return String(slug).replace(/-/g, " ");
+      }
+    }
+    function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candYear, options) {
+      var opts = options || {};
+      var minCoverage = opts.minCoverage !== void 0 ? opts.minCoverage : 0.75;
+      var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
+      var tNorm = normalizeText(targetTitle);
+      var cNorm = normalizeText(candTitle);
+      var sClean = cleanSlug(candSlug);
+      var sNorm = normalizeText(sClean);
+      if (!tNorm || !cNorm && !sNorm) {
+        return { matched: false, score: 0, reason: "empty_input" };
+      }
+      var targetY = parseInt(targetYear, 10);
+      var candY = parseInt(candYear, 10);
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var diff = Math.abs(targetY - candY);
+        if (diff > 1) {
+          return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (cNorm === tNorm || sNorm === tNorm) {
+        var exactScore = 100;
+        if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+          var yDiff = Math.abs(targetY - candY);
+          if (yDiff === 0) exactScore += 25;
+          else if (yDiff === 1) exactScore += 10;
+        }
+        return { matched: true, score: exactScore, reason: "exact_title_match" };
+      }
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokens = new Set(cTokensList);
+      var matchCount = 0;
+      for (var i = 0; i < tTokens.length; i++) {
+        if (cTokens.has(tTokens[i])) {
+          matchCount++;
+        }
+      }
+      var coverage = tTokens.length > 0 ? matchCount / tTokens.length : 0;
+      if (coverage < minCoverage) {
+        return {
+          matched: false,
+          score: 0,
+          reason: "low_coverage_" + Math.round(coverage * 100) + "pct"
+        };
+      }
+      var score = coverage * 70;
+      var candUniqueTokens = new Set(tokenize(candTitle));
+      var extraTokens = 0;
+      candUniqueTokens.forEach(function(tok) {
+        if (tTokens.indexOf(tok) === -1) extraTokens++;
+      });
+      if (extraTokens > 0) {
+        score -= Math.min(20, extraTokens * 5);
+      }
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var yDiff2 = Math.abs(targetY - candY);
+        if (yDiff2 === 0) score += 20;
+        else if (yDiff2 === 1) score += 10;
+      }
+      if (score >= minScore) {
+        return { matched: true, score, reason: "token_match" };
+      }
+      return { matched: false, score, reason: "score_below_threshold" };
+    }
+    function pickBestCandidate(candidates, targetTitle, targetYear, options) {
+      if (!Array.isArray(candidates) || candidates.length === 0) return null;
+      if (!targetTitle) return null;
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (!cand) continue;
+        var cTitle = cand.title || cand.name || cand.baslik || cand.orijinalBaslik || "";
+        var cSlug = cand.slug || cand.url || cand.href || "";
+        var cYear = cand.year || cand.yil || "";
+        if (!cYear) {
+          var ym = (String(cTitle) + " " + String(cSlug) + " " + String(cand.meta || "")).match(/\b(19\d\d|20\d\d)\b/);
+          if (ym) cYear = ym[1];
+        }
+        var res = calculateMatchScore(targetTitle, targetYear, cTitle, cSlug, cYear, options);
+        if (res.matched && res.score > bestScore) {
+          bestScore = res.score;
+          best = cand;
+        }
+      }
+      return best;
+    }
+    module2.exports = {
+      STOP_WORDS,
+      normalizeText,
+      tokenize,
+      cleanSlug,
+      calculateMatchScore,
+      pickBestCandidate
+    };
+  }
+});
+
 // src/hdfilmizle/index.js
 var require_hdfilmizle = __commonJS({
   "src/hdfilmizle/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
+    var { pickBestCandidate } = require_matching();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -199,10 +352,6 @@ var require_hdfilmizle = __commonJS({
     var BASES = ["https://www.hdfilmizle.vip", "https://www.hdfilmizle.ink"];
     var TMDB_API_KEY = "500330721680edb6d5f7f12ba7cd9023";
     var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    function ultraClean(str) {
-      if (!str) return "";
-      return str.toString().toLowerCase().replace(/[ıİ]/g, "i").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[çÇ]/g, "c").replace(/[^a-z0-9]/g, "").trim();
-    }
     function fetchWithTimeout(url, options, ms) {
       var opts = options || {};
       try {
@@ -385,26 +534,7 @@ var require_hdfilmizle = __commonJS({
       });
     }
     function pickBest(cards, title, year) {
-      if (!cards || cards.length === 0) return null;
-      var cleanTarget = ultraClean(title);
-      if (year) {
-        for (var y = 0; y < cards.length; y++) {
-          if (cards[y].year && cards[y].year === year) {
-            var cy = ultraClean(cards[y].title);
-            if (cy === cleanTarget || cy.includes(cleanTarget) || cleanTarget.includes(cy)) {
-              return cards[y];
-            }
-          }
-        }
-      }
-      for (var i = 0; i < cards.length; i++) {
-        if (ultraClean(cards[i].title) === cleanTarget) return cards[i];
-      }
-      for (var j = 0; j < cards.length; j++) {
-        var c = ultraClean(cards[j].title);
-        if (c.includes(cleanTarget) || cleanTarget.includes(c)) return cards[j];
-      }
-      return cards[0];
+      return pickBestCandidate(cards, title, year, { minCoverage: 0.75, minScore: 50 });
     }
     function spgDecode(n, o) {
       try {

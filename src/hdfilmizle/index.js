@@ -1,5 +1,6 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { pickBestCandidate } = require("../shared/matching.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -219,26 +220,7 @@ async function searchAll(query) {
 }
 
 function pickBest(cards, title, year) {
-    if (!cards || cards.length === 0) return null;
-    var cleanTarget = ultraClean(title);
-    if (year) {
-        for (var y = 0; y < cards.length; y++) {
-            if (cards[y].year && cards[y].year === year) {
-                var cy = ultraClean(cards[y].title);
-                if (cy === cleanTarget || cy.includes(cleanTarget) || cleanTarget.includes(cy)) {
-                    return cards[y];
-                }
-            }
-        }
-    }
-    for (var i = 0; i < cards.length; i++) {
-        if (ultraClean(cards[i].title) === cleanTarget) return cards[i];
-    }
-    for (var j = 0; j < cards.length; j++) {
-        var c = ultraClean(cards[j].title);
-        if (c.includes(cleanTarget) || cleanTarget.includes(c)) return cards[j];
-    }
-    return cards[0];
+    return pickBestCandidate(cards, title, year, { minCoverage: 0.75, minScore: 50 });
 }
 
 function spgDecode(n, o) {

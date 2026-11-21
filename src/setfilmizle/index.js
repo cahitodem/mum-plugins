@@ -1,5 +1,6 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { pickBestCandidate } = require("../shared/matching.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -57,6 +58,7 @@ async function resolveTmdbInfo(id, mediaType) {
         var numericId = null;
         var title = '';
         var origTitle = '';
+        var year = '';
         if (cleanId.startsWith('tt')) {
             var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', {}, 10000);
             if (findRes.ok) {
@@ -69,6 +71,8 @@ async function resolveTmdbInfo(id, mediaType) {
                     title = match.name || match.title || '';
                     origTitle = match.original_name || match.original_title || '';
                     numericId = match.id;
+                    var rd0 = match.release_date || match.first_air_date || '';
+                    if (rd0) year = rd0.split('-')[0];
                 }
             }
         } else {
@@ -79,9 +83,11 @@ async function resolveTmdbInfo(id, mediaType) {
                 var td = await tRes.json();
                 title = td.name || td.title || '';
                 origTitle = td.original_name || td.original_title || '';
+                var rd1 = td.release_date || td.first_air_date || '';
+                if (rd1) year = rd1.split('-')[0];
             }
         }
-        return { title: title, origTitle: origTitle, numericId: numericId };
+        return { title: title, origTitle: origTitle, numericId: numericId, year: year };
     } catch (e) {
         return { title: '', origTitle: '', numericId: id };
     }
@@ -131,17 +137,8 @@ async function searchSite(query) {
     }
 }
 
-function pickBest(cards, title) {
-    if (!cards || cards.length === 0) return null;
-    var cleanTarget = ultraClean(title);
-    for (var i = 0; i < cards.length; i++) {
-        if (ultraClean(cards[i].title) === cleanTarget) return cards[i];
-    }
-    for (var j = 0; j < cards.length; j++) {
-        var c = ultraClean(cards[j].title);
-        if (c.includes(cleanTarget) || cleanTarget.includes(c)) return cards[j];
-    }
-    return cards[0];
+function pickBest(cards, title, year) {
+    return pickBestCandidate(cards, title, year, { minCoverage: 0.75, minScore: 50 });
 }
 
 /* SPG.cerceve(n, o): atob(n) XOR atob(o) -> split('|'), [0] alınır */
@@ -572,7 +569,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             if (!cards || cards.length === 0) continue;
             var wantTv = (mediaType === 'tv' || mediaType === 'series');
             var filtered = cards.filter(function(c) { return wantTv ? c.isTv : !c.isTv; });
-            var best = pickBest(filtered.length > 0 ? filtered : cards, searchTitles[t]);
+            var best = pickBest(filtered.length > 0 ? filtered : cards, searchTitles[t], info.year);
             if (!best) continue;
 
             if (best.isTv) {

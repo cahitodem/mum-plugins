@@ -177,11 +177,164 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/matching.js
+var require_matching = __commonJS({
+  "src/shared/matching.js"(exports2, module2) {
+    var STOP_WORDS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "with",
+      "by",
+      "bir",
+      "ve",
+      "ile",
+      "icin",
+      "de",
+      "da",
+      "izle",
+      "dizi",
+      "dizisi",
+      "film",
+      "filmi",
+      "bolum",
+      "sezon",
+      "hd",
+      "full"
+    ]);
+    function normalizeText(str) {
+      if (!str) return "";
+      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function tokenize(str) {
+      var norm = normalizeText(str);
+      if (!norm) return [];
+      return norm.split(/\s+/).filter(function(w) {
+        return w.length > 1 && !STOP_WORDS.has(w);
+      });
+    }
+    function cleanSlug(slug) {
+      if (!slug) return "";
+      try {
+        var last = String(slug).split("/").filter(Boolean).pop() || "";
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+      } catch (_) {
+        return String(slug).replace(/-/g, " ");
+      }
+    }
+    function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candYear, options) {
+      var opts = options || {};
+      var minCoverage = opts.minCoverage !== void 0 ? opts.minCoverage : 0.75;
+      var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
+      var tNorm = normalizeText(targetTitle);
+      var cNorm = normalizeText(candTitle);
+      var sClean = cleanSlug(candSlug);
+      var sNorm = normalizeText(sClean);
+      if (!tNorm || !cNorm && !sNorm) {
+        return { matched: false, score: 0, reason: "empty_input" };
+      }
+      var targetY = parseInt(targetYear, 10);
+      var candY = parseInt(candYear, 10);
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var diff = Math.abs(targetY - candY);
+        if (diff > 1) {
+          return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (cNorm === tNorm || sNorm === tNorm) {
+        var exactScore = 100;
+        if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+          var yDiff = Math.abs(targetY - candY);
+          if (yDiff === 0) exactScore += 25;
+          else if (yDiff === 1) exactScore += 10;
+        }
+        return { matched: true, score: exactScore, reason: "exact_title_match" };
+      }
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokens = new Set(cTokensList);
+      var matchCount = 0;
+      for (var i = 0; i < tTokens.length; i++) {
+        if (cTokens.has(tTokens[i])) {
+          matchCount++;
+        }
+      }
+      var coverage = tTokens.length > 0 ? matchCount / tTokens.length : 0;
+      if (coverage < minCoverage) {
+        return {
+          matched: false,
+          score: 0,
+          reason: "low_coverage_" + Math.round(coverage * 100) + "pct"
+        };
+      }
+      var score = coverage * 70;
+      var candUniqueTokens = new Set(tokenize(candTitle));
+      var extraTokens = 0;
+      candUniqueTokens.forEach(function(tok) {
+        if (tTokens.indexOf(tok) === -1) extraTokens++;
+      });
+      if (extraTokens > 0) {
+        score -= Math.min(20, extraTokens * 5);
+      }
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var yDiff2 = Math.abs(targetY - candY);
+        if (yDiff2 === 0) score += 20;
+        else if (yDiff2 === 1) score += 10;
+      }
+      if (score >= minScore) {
+        return { matched: true, score, reason: "token_match" };
+      }
+      return { matched: false, score, reason: "score_below_threshold" };
+    }
+    function pickBestCandidate(candidates, targetTitle, targetYear, options) {
+      if (!Array.isArray(candidates) || candidates.length === 0) return null;
+      if (!targetTitle) return null;
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (!cand) continue;
+        var cTitle = cand.title || cand.name || cand.baslik || cand.orijinalBaslik || "";
+        var cSlug = cand.slug || cand.url || cand.href || "";
+        var cYear = cand.year || cand.yil || "";
+        if (!cYear) {
+          var ym = (String(cTitle) + " " + String(cSlug) + " " + String(cand.meta || "")).match(/\b(19\d\d|20\d\d)\b/);
+          if (ym) cYear = ym[1];
+        }
+        var res = calculateMatchScore(targetTitle, targetYear, cTitle, cSlug, cYear, options);
+        if (res.matched && res.score > bestScore) {
+          bestScore = res.score;
+          best = cand;
+        }
+      }
+      return best;
+    }
+    module2.exports = {
+      STOP_WORDS,
+      normalizeText,
+      tokenize,
+      cleanSlug,
+      calculateMatchScore,
+      pickBestCandidate
+    };
+  }
+});
+
 // src/filmmodu/index.js
 var require_filmmodu = __commonJS({
   "src/filmmodu/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
+    var { pickBestCandidate } = require_matching();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -274,56 +427,11 @@ var require_filmmodu = __commonJS({
       if (!str) return "";
       return str.toLowerCase().replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s").replace(/ı/g, "i").replace(/ö/g, "o").replace(/ç/g, "c").replace(/â|á|à/g, "a").replace(/î|í/g, "i").replace(/û|ú/g, "u").replace(/[^a-z0-9]/g, "");
     }
-    function slugFromHref(href) {
-      try {
-        var last = href.split("/").filter(Boolean).pop() || "";
-        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").trim();
-      } catch (e) {
-        return href;
-      }
-    }
     function findBestMatch(results, searchTitle, year) {
-      var normalizedSearch = normalizeForUrl(searchTitle);
-      var slugSearch = normalizeForUrl(slugFromHref(searchTitle));
-      for (var s = 0; s < results.length; s++) {
-        var slugNorm = normalizeForUrl(slugFromHref(results[s].href));
-        if (slugNorm === normalizedSearch || slugNorm === slugSearch) {
-          console.log("[FilmModu] Slug tam e\u015Fle\u015Fti: " + results[s].href);
-          return results[s].href;
-        }
-      }
-      if (year) {
-        for (var i = 0; i < results.length; i++) {
-          var normalizedHref = normalizeForUrl(results[i].href);
-          if (normalizedHref.indexOf(normalizedSearch) !== -1 && results[i].href.indexOf(year) !== -1) {
-            console.log("[FilmModu] Ba\u015Fl\u0131k+y\u0131l e\u015Fle\u015Fti: " + results[i].href);
-            return results[i].href;
-          }
-        }
-      }
-      var best = null;
-      var bestLen = Infinity;
-      for (var j = 0; j < results.length; j++) {
-        var normalizedHref2 = normalizeForUrl(results[j].href);
-        if (normalizedHref2.indexOf(normalizedSearch) !== -1) {
-          var len = normalizedHref2.length;
-          if (len < bestLen) {
-            best = results[j].href;
-            bestLen = len;
-          }
-        }
-      }
-      if (best) {
-        console.log("[FilmModu] Ba\u015Fl\u0131k e\u015Fle\u015Fti (en k\u0131sa): " + best);
-        return best;
-      }
-      if (year) {
-        for (var k = 0; k < results.length; k++) {
-          if (results[k].href.indexOf(year) !== -1) {
-            console.log("[FilmModu] Y\u0131l e\u015Fle\u015Fti: " + results[k].href);
-            return results[k].href;
-          }
-        }
+      var best = pickBestCandidate(results, searchTitle, year, { minCoverage: 0.75, minScore: 50 });
+      if (best && best.href) {
+        console.log("[FilmModu] G\xFCvenilir e\u015Fle\u015Fme bulundu: " + best.href);
+        return best.href;
       }
       console.log("[FilmModu] G\xFCvenilir e\u015Fle\u015Fme bulunamad\u0131, atlan\u0131yor");
       return null;
@@ -369,7 +477,7 @@ var require_filmmodu = __commonJS({
           var a = $(this).find("a").first();
           var href = a.attr("href") || "";
           var text = a.text().trim();
-          if (href) results.push({ href, text });
+          if (href) results.push({ href, text, title: text });
         });
         console.log("[FilmModu] Bulunan sonu\xE7 say\u0131s\u0131: " + results.length);
         if (results.length === 0) return null;
@@ -578,42 +686,12 @@ var require_filmmodu = __commonJS({
             candidates.push({ href, title: candTitle, year: candYear });
           }
         });
-        var stopWords = ["the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "with", "by", "bir", "ve", "ile", "icin", "de", "da"];
-        var meaningfulWords = q.toLowerCase().split(/\s+/).filter(function(w) {
-          return w.length > 2 && stopWords.indexOf(w) === -1;
-        });
-        var words = meaningfulWords.length > 0 ? meaningfulWords : q.toLowerCase().split(/\s+/).filter(function(w) {
-          return w.length > 2;
-        });
-        var bestScore = -1;
-        for (var i = 0; i < candidates.length; i++) {
-          var cand = candidates[i];
-          var normH = normalizeForUrl(cand.href);
-          var normT = normalizeForUrl(cand.title);
-          var score = 0;
-          var fullMatch = normH.indexOf(normQ) !== -1 || normT.indexOf(normQ) !== -1;
-          if (fullMatch) {
-            score += 10;
-          }
-          var matchedWords = words.filter(function(w) {
-            var nw = normalizeForUrl(w);
-            return normH.indexOf(nw) !== -1 || normT.indexOf(nw) !== -1;
-          });
-          if (!fullMatch && matchedWords.length === 0) {
-            continue;
-          }
-          if (year && cand.year && cand.year === year) {
-            score += 8;
-          } else if (year && cand.href.indexOf(year) !== -1) {
-            score += 5;
-          }
-          score += matchedWords.length * 3;
-          if (score > bestScore && score >= 3) {
-            bestScore = score;
-            filmHref = cand.href;
-          }
+        var bestCand = pickBestCandidate(candidates, q, year, { minCoverage: 0.75, minScore: 50 });
+        if (!bestCand || !bestCand.href) {
+          console.log("[FilmModu.live] G\xFCvenilir e\u015Fle\u015Fme bulunamad\u0131, atlan\u0131yor");
+          return [];
         }
-        if (!filmHref) return [];
+        filmHref = bestCand.href;
         console.log("[FilmModu.live] Film bulundu: " + filmHref);
         var sigPage = timeoutSignal(12e3);
         var pageOpts = { headers: liveHeaders };
@@ -707,9 +785,13 @@ var require_filmmodu = __commonJS({
               "Referer": playerEmbedUrl,
               "User-Agent": HEADERS["User-Agent"]
             };
+            var streamTitle = "FilmModu \u2022 HLS";
+            if (Array.isArray(pData.audios) && pData.audios[0] && pData.audios[0].label) {
+              streamTitle = pData.audios[0].label + " \u2022 1080p FHD";
+            }
             var sObj = {
               name: "FilmModu",
-              title: "FilmModu \u2022 HLS",
+              title: streamTitle,
               url: pData.stream,
               quality: "HLS",
               type: "hls",

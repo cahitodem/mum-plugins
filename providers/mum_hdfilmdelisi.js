@@ -177,11 +177,164 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/matching.js
+var require_matching = __commonJS({
+  "src/shared/matching.js"(exports2, module2) {
+    var STOP_WORDS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "with",
+      "by",
+      "bir",
+      "ve",
+      "ile",
+      "icin",
+      "de",
+      "da",
+      "izle",
+      "dizi",
+      "dizisi",
+      "film",
+      "filmi",
+      "bolum",
+      "sezon",
+      "hd",
+      "full"
+    ]);
+    function normalizeText(str) {
+      if (!str) return "";
+      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function tokenize(str) {
+      var norm = normalizeText(str);
+      if (!norm) return [];
+      return norm.split(/\s+/).filter(function(w) {
+        return w.length > 1 && !STOP_WORDS.has(w);
+      });
+    }
+    function cleanSlug(slug) {
+      if (!slug) return "";
+      try {
+        var last = String(slug).split("/").filter(Boolean).pop() || "";
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+      } catch (_) {
+        return String(slug).replace(/-/g, " ");
+      }
+    }
+    function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candYear, options) {
+      var opts = options || {};
+      var minCoverage = opts.minCoverage !== void 0 ? opts.minCoverage : 0.75;
+      var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
+      var tNorm = normalizeText(targetTitle);
+      var cNorm = normalizeText(candTitle);
+      var sClean = cleanSlug(candSlug);
+      var sNorm = normalizeText(sClean);
+      if (!tNorm || !cNorm && !sNorm) {
+        return { matched: false, score: 0, reason: "empty_input" };
+      }
+      var targetY = parseInt(targetYear, 10);
+      var candY = parseInt(candYear, 10);
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var diff = Math.abs(targetY - candY);
+        if (diff > 1) {
+          return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (cNorm === tNorm || sNorm === tNorm) {
+        var exactScore = 100;
+        if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+          var yDiff = Math.abs(targetY - candY);
+          if (yDiff === 0) exactScore += 25;
+          else if (yDiff === 1) exactScore += 10;
+        }
+        return { matched: true, score: exactScore, reason: "exact_title_match" };
+      }
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokens = new Set(cTokensList);
+      var matchCount = 0;
+      for (var i = 0; i < tTokens.length; i++) {
+        if (cTokens.has(tTokens[i])) {
+          matchCount++;
+        }
+      }
+      var coverage = tTokens.length > 0 ? matchCount / tTokens.length : 0;
+      if (coverage < minCoverage) {
+        return {
+          matched: false,
+          score: 0,
+          reason: "low_coverage_" + Math.round(coverage * 100) + "pct"
+        };
+      }
+      var score = coverage * 70;
+      var candUniqueTokens = new Set(tokenize(candTitle));
+      var extraTokens = 0;
+      candUniqueTokens.forEach(function(tok) {
+        if (tTokens.indexOf(tok) === -1) extraTokens++;
+      });
+      if (extraTokens > 0) {
+        score -= Math.min(20, extraTokens * 5);
+      }
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var yDiff2 = Math.abs(targetY - candY);
+        if (yDiff2 === 0) score += 20;
+        else if (yDiff2 === 1) score += 10;
+      }
+      if (score >= minScore) {
+        return { matched: true, score, reason: "token_match" };
+      }
+      return { matched: false, score, reason: "score_below_threshold" };
+    }
+    function pickBestCandidate(candidates, targetTitle, targetYear, options) {
+      if (!Array.isArray(candidates) || candidates.length === 0) return null;
+      if (!targetTitle) return null;
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (!cand) continue;
+        var cTitle = cand.title || cand.name || cand.baslik || cand.orijinalBaslik || "";
+        var cSlug = cand.slug || cand.url || cand.href || "";
+        var cYear = cand.year || cand.yil || "";
+        if (!cYear) {
+          var ym = (String(cTitle) + " " + String(cSlug) + " " + String(cand.meta || "")).match(/\b(19\d\d|20\d\d)\b/);
+          if (ym) cYear = ym[1];
+        }
+        var res = calculateMatchScore(targetTitle, targetYear, cTitle, cSlug, cYear, options);
+        if (res.matched && res.score > bestScore) {
+          bestScore = res.score;
+          best = cand;
+        }
+      }
+      return best;
+    }
+    module2.exports = {
+      STOP_WORDS,
+      normalizeText,
+      tokenize,
+      cleanSlug,
+      calculateMatchScore,
+      pickBestCandidate
+    };
+  }
+});
+
 // src/hdfilmdelisi/index.js
 var require_hdfilmdelisi = __commonJS({
   "src/hdfilmdelisi/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
+    var { pickBestCandidate } = require_matching();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -213,10 +366,6 @@ var require_hdfilmdelisi = __commonJS({
       "Origin": "https://pl.vixolity.com",
       "Accept": "*/*"
     };
-    function ultraClean(str) {
-      if (!str) return "";
-      return str.toString().toLowerCase().replace(/[ıİ]/g, "i").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[çÇ]/g, "c").replace(/[^a-z0-9]/g, "").trim();
-    }
     function fetchWithTimeout(url, options, ms) {
       var opts = options || {};
       try {
@@ -235,6 +384,7 @@ var require_hdfilmdelisi = __commonJS({
           var title = "";
           var origTitle = "";
           var imdbId = "";
+          var year = "";
           if (cleanId.startsWith("tt")) {
             imdbId = cleanId;
             var findRes = yield fetchWithTimeout("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", {}, 1e4);
@@ -245,6 +395,8 @@ var require_hdfilmdelisi = __commonJS({
               if (match) {
                 title = match.name || match.title || "";
                 origTitle = match.original_name || match.original_title || "";
+                var rd0 = match.release_date || match.first_air_date || "";
+                if (rd0) year = rd0.split("-")[0];
               }
             }
           } else {
@@ -254,6 +406,8 @@ var require_hdfilmdelisi = __commonJS({
               var td = yield tRes.json();
               title = td.name || td.title || "";
               origTitle = td.original_name || td.original_title || "";
+              var rd1 = td.release_date || td.first_air_date || "";
+              if (rd1) year = rd1.split("-")[0];
               if (td.imdb_id) imdbId = td.imdb_id;
             }
             if (!imdbId && (mediaType === "tv" || mediaType === "series")) {
@@ -264,9 +418,9 @@ var require_hdfilmdelisi = __commonJS({
               }
             }
           }
-          return { title, origTitle, imdbId };
+          return { title, origTitle, imdbId, year };
         } catch (e) {
-          return { title: "", origTitle: "", imdbId: "" };
+          return { title: "", origTitle: "", imdbId: "", year: "" };
         }
       });
     }
@@ -284,20 +438,8 @@ var require_hdfilmdelisi = __commonJS({
         }
       });
     }
-    function pickBest(results, title) {
-      if (!results || results.length === 0) return null;
-      var cleanTarget = ultraClean(title);
-      var nameOf = function(r) {
-        return r.baslik || r.orijinalBaslik || r.title || "";
-      };
-      for (var i = 0; i < results.length; i++) {
-        if (ultraClean(nameOf(results[i])) === cleanTarget) return results[i];
-      }
-      for (var j = 0; j < results.length; j++) {
-        var c = ultraClean(nameOf(results[j]));
-        if (c.includes(cleanTarget) || cleanTarget.includes(c)) return results[j];
-      }
-      return results[0];
+    function pickBest(results, title, year) {
+      return pickBestCandidate(results, title, year, { minCoverage: 0.75, minScore: 50 });
     }
     function vidmodyDecrypt(hex, key) {
       try {
@@ -533,7 +675,7 @@ var require_hdfilmdelisi = __commonJS({
           for (var t = 0; t < searchTitles.length; t++) {
             var results = yield apiSearch(searchTitles[t]);
             if (!results || results.length === 0) continue;
-            var best = pickBest(results, searchTitles[t]);
+            var best = pickBest(results, searchTitles[t], info.year);
             if (!best || !best.slug) continue;
             if (best.imdbId && best.imdbId.startsWith("tt") && !seenUrls.has("https://ha.vixolity.com/vs/" + best.imdbId)) {
               var sUrl = "https://ha.vixolity.com/vs/" + best.imdbId;

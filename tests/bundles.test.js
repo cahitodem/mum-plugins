@@ -15,9 +15,9 @@ function load(scraper,fetch) {
  return {context,reports,provider:context.module.exports};
 }
 test('manifest exactly matches film/series allowlist and generated artifacts',()=>{
- assert.equal(manifest.name,'MUM Plugins');assert.equal(manifest.scrapers.length,11);
+ assert.equal(manifest.name,'MUM Plugins');assert.equal(manifest.scrapers.length,sources.length);
  assert.deepEqual(manifest.scrapers.map(s=>s.id),sources.map(s=>s.id));
- assert.equal(new Set(manifest.scrapers.map(s=>s.id)).size,11);
+ assert.equal(new Set(manifest.scrapers.map(s=>s.id)).size,sources.length);
  assert.deepEqual(fs.readdirSync('providers').sort(),manifest.scrapers.map(s=>s.filename.split('/').pop()).sort());
  for(const s of manifest.scrapers){assert.ok(s.supportedTypes.every(t=>['movie','tv'].includes(t)));assert.ok(fs.existsSync(s.filename));}
  for(const dir of fs.readdirSync('src'))assert.ok(dir==='shared'||sources.some(s=>s.key===dir));
@@ -56,4 +56,35 @@ test('FilmModu resolves TV metadata, exact season episode, and page-selected pla
  });
  const result=await provider.getStreams('1399','tv',5,6);
  assert.equal(result.length,1);assert.match(result[0].url,/play2\.pilavyerplay\.top\/api\/stream\.php/);assert.equal(result[0].title,'Türkçe • 1080p FHD');assert.ok(result[0].headers.Referer.includes('/assets/js/s.php?'));assert.equal(requests.length,5);assert.match(reports.at(-1),/sources-found/);
+});
+test('SezonlukDizi resolves series episode, filters challenge embeds, and extracts playable streams',async()=>{
+ const requests=[];
+ const scraper=manifest.scrapers.find(s=>s.id==='mum_sezonlukdizi');
+ const {provider,reports}=load(scraper,async(url,options={})=>{
+  const u=String(url);
+  requests.push(u);
+  if(u.includes('api.themoviedb.org'))return {ok:true,json:async()=>({name:'Fixture Series',original_name:'Fixture Series'})};
+  if(u.includes('/ajax/arama.asp'))return {ok:true,json:async()=>({status:'success',results:{diziler:{name:'Diziler',results:[{did:999,title:'Fixture Series',url:'/diziler/fixture-series.html'}]}}})};
+  if(u.includes('/fixture-series/2-sezon-3-bolum.html'))return {ok:true,text:async()=>'<div id="topBarBtn" bid="8899"></div>'};
+  if(u.includes('/ajax/dataAlternatif22.asp')) {
+   const body = String(options.body||'');
+   if (body.includes('dil=1')) {
+     return {ok:true,json:async()=>({status:'success',data:[{id:101,baslik:'VidMoly',kalite:4},{id:102,baslik:'Pixel',kalite:4}]})};
+   }
+   return {ok:true,json:async()=>({status:'success',data:[]})};
+  }
+  if(u.includes('/ajax/dataEmbed22.asp')) {
+   const body = String(options.body||'');
+   if(body.includes('id=101'))return {ok:true,text:async()=>'<iframe src="https://vidmoly.biz/embed-fixture123.html"></iframe>'};
+   if(body.includes('id=102'))return {ok:true,text:async()=>'<iframe src="/ajax/reCAPTCHADATA.asp"></iframe>'};
+  }
+  if(u.includes('vidmoly.biz/embed-fixture123.html'))return {ok:true,text:async()=>'<script>var player = {file: "https://vidmoly.biz/live/master.m3u8"};</script>'};
+  throw Error('Unexpected fixture request: ' + u);
+ });
+ const result=await provider.getStreams('999','tv',2,3);
+ assert.equal(result.length,1);
+ assert.equal(result[0].url,'https://vidmoly.biz/live/master.m3u8');
+ assert.equal(result[0].type,'hls');
+ assert.equal(result[0].provider,'sezonlukdizi');
+ assert.match(reports.at(-1),/sources-found/);
 });

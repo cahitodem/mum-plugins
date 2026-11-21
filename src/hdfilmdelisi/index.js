@@ -1,5 +1,6 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { pickBestCandidate } = require("../shared/matching.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -69,6 +70,7 @@ async function resolveTmdbInfo(id, mediaType) {
         var title = '';
         var origTitle = '';
         var imdbId = '';
+        var year = '';
         if (cleanId.startsWith('tt')) {
             imdbId = cleanId;
             var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', {}, 10000);
@@ -81,6 +83,8 @@ async function resolveTmdbInfo(id, mediaType) {
                 if (match) {
                     title = match.name || match.title || '';
                     origTitle = match.original_name || match.original_title || '';
+                    var rd0 = match.release_date || match.first_air_date || '';
+                    if (rd0) year = rd0.split('-')[0];
                 }
             }
         } else {
@@ -90,6 +94,8 @@ async function resolveTmdbInfo(id, mediaType) {
                 var td = await tRes.json();
                 title = td.name || td.title || '';
                 origTitle = td.original_name || td.original_title || '';
+                var rd1 = td.release_date || td.first_air_date || '';
+                if (rd1) year = rd1.split('-')[0];
                 if (td.imdb_id) imdbId = td.imdb_id;
             }
             if (!imdbId && (mediaType === 'tv' || mediaType === 'series')) {
@@ -100,9 +106,9 @@ async function resolveTmdbInfo(id, mediaType) {
                 }
             }
         }
-        return { title: title, origTitle: origTitle, imdbId: imdbId };
+        return { title: title, origTitle: origTitle, imdbId: imdbId, year: year };
     } catch (e) {
-        return { title: '', origTitle: '', imdbId: '' };
+        return { title: '', origTitle: '', imdbId: '', year: '' };
     }
 }
 
@@ -119,18 +125,8 @@ async function apiSearch(query) {
     }
 }
 
-function pickBest(results, title) {
-    if (!results || results.length === 0) return null;
-    var cleanTarget = ultraClean(title);
-    var nameOf = function(r) { return r.baslik || r.orijinalBaslik || r.title || ''; };
-    for (var i = 0; i < results.length; i++) {
-        if (ultraClean(nameOf(results[i])) === cleanTarget) return results[i];
-    }
-    for (var j = 0; j < results.length; j++) {
-        var c = ultraClean(nameOf(results[j]));
-        if (c.includes(cleanTarget) || cleanTarget.includes(c)) return results[j];
-    }
-    return results[0];
+function pickBest(results, title, year) {
+    return pickBestCandidate(results, title, year, { minCoverage: 0.75, minScore: 50 });
 }
 
 /* VidMody şifre çözümü: hex->char, ters çevir, base64 çöz, bayt çıkar, \xNN kaçışları */
@@ -383,7 +379,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         for (var t = 0; t < searchTitles.length; t++) {
             var results = await apiSearch(searchTitles[t]);
             if (!results || results.length === 0) continue;
-            var best = pickBest(results, searchTitles[t]);
+            var best = pickBest(results, searchTitles[t], info.year);
             if (!best || !best.slug) continue;
 
             if (best.imdbId && best.imdbId.startsWith('tt') && !seenUrls.has('https://ha.vixolity.com/vs/' + best.imdbId)) {

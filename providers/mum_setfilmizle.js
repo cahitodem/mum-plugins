@@ -474,7 +474,7 @@ var require_setfilmizle = __commonJS({
           var origTitle = "";
           var year = "";
           if (cleanId.startsWith("tt")) {
-            var findRes = yield fetchWithTimeout("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", { signal }, 8e3);
+            var findRes = yield fetchWithTimeout("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id&language=tr-TR", { signal }, 8e3);
             if (findRes.ok) {
               var fd = yield findRes.json();
               var match = mediaType === "tv" || mediaType === "series" ? fd.tv_results && fd.tv_results[0] : fd.movie_results && fd.movie_results[0];
@@ -526,10 +526,13 @@ var require_setfilmizle = __commonJS({
         var srcMatch = inner.match(/<img[^>]+(?:src|data-src)="([^"]+)"/i);
         var title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : imgMatch && imgMatch[1] ? imgMatch[1].trim() : "";
         if (!title) continue;
+        var yearMatch = inner.match(/<p[^>]*class="[^"]*meta[^"]*"[^>]*>(\d{4})/i) || inner.match(/<dt>Yıl<\/dt>\s*<dd>(\d{4})<\/dd>/i) || href.match(/-(20\d\d|19\d\d)\/?$/);
+        var year = yearMatch ? yearMatch[1] : "";
         seen.add(href);
         out.push({
           title,
           href,
+          year,
           poster: srcMatch ? absUrl(srcMatch[1]) : "",
           isTv: href.includes("/dizi/")
         });
@@ -663,7 +666,7 @@ var require_setfilmizle = __commonJS({
           var res = yield fetchWithTimeout(pageUrl, { headers: HEADERS }, 15e3);
           if (!res.ok) return [];
           var html = yield res.text();
-          var ajaxMatch = html.match(/window\.STF_AJAX\s*=\s*\{[^}]*url\s*:\s*"([^"]+)"[^}]*nonces\s*:\s*\{[^}]*video\s*:\s*"([^"]+)"/);
+          var ajaxMatch = html.match(/(?:window\.)?STF_AJAX\s*=\s*\{[\s\S]*?url\s*:\s*"([^"]+)"[\s\S]*?video\s*:\s*"([^"]+)"/i);
           var ajaxUrl = ajaxMatch ? ajaxMatch[1] : BASE_URL + "/wp-admin/admin-ajax.php";
           var videoNonce = ajaxMatch ? ajaxMatch[2] : "";
           var players = [];
@@ -762,7 +765,7 @@ var require_setfilmizle = __commonJS({
                 if (!fp || !fp.manifestUrl) continue;
                 var sHeaders = {
                   "User-Agent": "ExoPlayerLib/2.19.1",
-                  "Referer": fp.referer
+                  "Referer": "https://fastplay.mom/"
                 };
                 streams.push({
                   name: "SetFilmIzle",

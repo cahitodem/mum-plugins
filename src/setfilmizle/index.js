@@ -52,7 +52,7 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         var origTitle = '';
         var year = '';
         if (cleanId.startsWith('tt')) {
-            var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', { signal: signal }, 8000);
+            var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id&language=tr-TR', { signal: signal }, 8000);
             if (findRes.ok) {
                 var fd = await findRes.json();
                 var match = (mediaType === 'tv' || mediaType === 'series')
@@ -107,10 +107,15 @@ function parseCards(html) {
         var srcMatch = inner.match(/<img[^>]+(?:src|data-src)="([^"]+)"/i);
         var title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : (imgMatch && imgMatch[1] ? imgMatch[1].trim() : '');
         if (!title) continue;
+        var yearMatch = inner.match(/<p[^>]*class="[^"]*meta[^"]*"[^>]*>(\d{4})/i) ||
+                        inner.match(/<dt>Yıl<\/dt>\s*<dd>(\d{4})<\/dd>/i) ||
+                        href.match(/-(20\d\d|19\d\d)\/?$/);
+        var year = yearMatch ? yearMatch[1] : '';
         seen.add(href);
         out.push({
             title: title,
             href: href,
+            year: year,
             poster: srcMatch ? absUrl(srcMatch[1]) : '',
             isTv: href.includes('/dizi/')
         });
@@ -257,7 +262,7 @@ async function extractStreamsFromContentPage(pageUrl) {
         if (!res.ok) return [];
         var html = await res.text();
 
-        var ajaxMatch = html.match(/window\.STF_AJAX\s*=\s*\{[^}]*url\s*:\s*"([^"]+)"[^}]*nonces\s*:\s*\{[^}]*video\s*:\s*"([^"]+)"/);
+        var ajaxMatch = html.match(/(?:window\.)?STF_AJAX\s*=\s*\{[\s\S]*?url\s*:\s*"([^"]+)"[\s\S]*?video\s*:\s*"([^"]+)"/i);
         var ajaxUrl = ajaxMatch ? ajaxMatch[1] : (BASE_URL + '/wp-admin/admin-ajax.php');
         var videoNonce = ajaxMatch ? ajaxMatch[2] : '';
 
@@ -367,7 +372,7 @@ async function extractStreamsFromContentPage(pageUrl) {
 
                 var sHeaders = {
                     'User-Agent': 'ExoPlayerLib/2.19.1',
-                    'Referer': fp.referer
+                    'Referer': 'https://fastplay.mom/'
                 };
                 streams.push({
                     name: 'SetFilmIzle',

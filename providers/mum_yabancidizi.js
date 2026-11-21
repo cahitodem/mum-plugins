@@ -501,6 +501,110 @@ var require_yabancidizi = __commonJS({
         }
       });
     }
+    function parseMasterVariants(masterContent, masterUrl) {
+      var lines = masterContent.split(/\r?\n/);
+      var variants = [];
+      var currentStreamInf = null;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.indexOf("#EXT-X-STREAM-INF:") === 0) {
+          currentStreamInf = line;
+        } else if (line && line.indexOf("#") !== 0 && currentStreamInf) {
+          var variantUrl = line;
+          if (variantUrl.indexOf("http") !== 0) {
+            try {
+              variantUrl = new URL(variantUrl, masterUrl).toString();
+            } catch (_) {
+            }
+          }
+          var resMatch = currentStreamInf.match(/RESOLUTION=(\d+)x(\d+)/i);
+          var width = resMatch ? parseInt(resMatch[1], 10) : 0;
+          var height = resMatch ? parseInt(resMatch[2], 10) : 0;
+          var bwMatch = currentStreamInf.match(/BANDWIDTH=(\d+)/i);
+          var bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+          var quality = "1080p";
+          if (height >= 1080 || width >= 1920) quality = "1080p";
+          else if (height >= 720 || width >= 1280) quality = "720p";
+          else if (height >= 480 || width >= 800) quality = "480p";
+          else if (height > 0) quality = height + "p";
+          variants.push({
+            url: variantUrl,
+            quality,
+            height,
+            width,
+            bandwidth
+          });
+          currentStreamInf = null;
+        }
+      }
+      return variants;
+    }
+    function resolveVidmolyStreams(m3u8Url, langText, seenUrls, signal) {
+      return __async(this, null, function* () {
+        var vmHeaders = {
+          "User-Agent": HEADERS["User-Agent"],
+          "Referer": "https://vidmoly.biz/"
+        };
+        var streams = [];
+        var variants = [];
+        try {
+          var mRes = yield safeFetch(m3u8Url, {
+            headers: vmHeaders,
+            signal
+          });
+          if (mRes.ok) {
+            var mText = yield mRes.text();
+            variants = parseMasterVariants(mText, m3u8Url);
+          }
+        } catch (_) {
+        }
+        var langLabel = langText ? " (" + langText + ")" : "";
+        if (variants && variants.length > 0) {
+          for (var v of variants) {
+            if (seenUrls.has(v.url)) continue;
+            seenUrls.add(v.url);
+            var qLabel = v.quality || "1080p";
+            var fastHint = qLabel === "720p" || qLabel === "480p" ? " \u26A1 H\u0131zl\u0131" : "";
+            streams.push({
+              name: "Yabanc\u0131Dizi",
+              title: "\u231C Yabanc\u0131Dizi \u231F | VidMoly [" + qLabel + fastHint + "]" + langLabel,
+              url: v.url,
+              quality: qLabel,
+              format: "hls",
+              isHls: true,
+              provider: "yabancidizi",
+              headers: vmHeaders,
+              behaviorHints: {
+                notWebReady: true,
+                proxyHeaders: {
+                  request: vmHeaders
+                }
+              }
+            });
+          }
+        }
+        if (streams.length === 0 && !seenUrls.has(m3u8Url)) {
+          seenUrls.add(m3u8Url);
+          streams.push({
+            name: "Yabanc\u0131Dizi",
+            title: "\u231C Yabanc\u0131Dizi \u231F | VidMoly [1080p]" + langLabel,
+            url: m3u8Url,
+            quality: "1080p",
+            format: "hls",
+            isHls: true,
+            provider: "yabancidizi",
+            headers: vmHeaders,
+            behaviorHints: {
+              notWebReady: true,
+              proxyHeaders: {
+                request: vmHeaders
+              }
+            }
+          });
+        }
+        return streams;
+      });
+    }
     function extractStreamsFromEpisodePage(epUrl, signal) {
       return __async(this, null, function* () {
         try {
@@ -539,28 +643,9 @@ var require_yabancidizi = __commonJS({
               if (vmRes.ok) {
                 var vmHtml = yield vmRes.text();
                 var m3u8Match = vmHtml.match(/file\s*:\s*['"](https?:\/\/[^'"<>]+\.m3u8[^'"<>]*)['"]/i);
-                if (m3u8Match && !seenUrls.has(m3u8Match[1])) {
-                  seenUrls.add(m3u8Match[1]);
-                  var vmHeaders = {
-                    "User-Agent": HEADERS["User-Agent"],
-                    "Referer": "https://vidmoly.biz/"
-                  };
-                  streams.push({
-                    name: "Yabanc\u0131Dizi",
-                    title: "\u231C Yabanc\u0131Dizi \u231F | VidMoly (" + langText + " 1080p HLS)",
-                    url: m3u8Match[1],
-                    quality: "1080p",
-                    format: "hls",
-                    isHls: true,
-                    provider: "yabancidizi",
-                    headers: vmHeaders,
-                    behaviorHints: {
-                      notWebReady: true,
-                      proxyHeaders: {
-                        request: vmHeaders
-                      }
-                    }
-                  });
+                if (m3u8Match) {
+                  var resolved = yield resolveVidmolyStreams(m3u8Match[1], langText, seenUrls, signal);
+                  for (var rs of resolved) streams.push(rs);
                 }
               }
             } catch (err) {
@@ -585,26 +670,9 @@ var require_yabancidizi = __commonJS({
               if (vmRes2.ok) {
                 var vmHtml2 = yield vmRes2.text();
                 var m3u8Match2 = vmHtml2.match(/file\s*:\s*['"](https?:\/\/[^'"<>]+\.m3u8[^'"<>]*)['"]/i);
-                if (m3u8Match2 && !seenUrls.has(m3u8Match2[1])) {
-                  seenUrls.add(m3u8Match2[1]);
-                  var vmHeaders2 = {
-                    "User-Agent": HEADERS["User-Agent"],
-                    "Referer": "https://vidmoly.biz/"
-                  };
-                  streams.push({
-                    name: "Yabanc\u0131Dizi",
-                    title: "\u231C Yabanc\u0131Dizi \u231F | VidMoly (1080p HLS)",
-                    url: m3u8Match2[1],
-                    quality: "1080p",
-                    format: "hls",
-                    isHls: true,
-                    headers: vmHeaders2,
-                    behaviorHints: {
-                      notWebReady: true,
-                      proxyHeaders: { request: vmHeaders2 }
-                    },
-                    provider: "yabancidizi"
-                  });
+                if (m3u8Match2) {
+                  var resolved2 = yield resolveVidmolyStreams(m3u8Match2[1], "", seenUrls, signal);
+                  for (var rs2 of resolved2) streams.push(rs2);
                 }
               }
             } catch (e) {

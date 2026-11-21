@@ -27,16 +27,18 @@ for(const scraper of manifest.scrapers)test(scraper.id+' loads without Node glob
  assert.equal(typeof provider.getStreams,'function');assert.equal(provider.getStreams,context.getStreams);
  assert.equal((await provider.getStreams('1','anime')).length,0);assert.match(reports.at(-1),/unsupported-type/);
 });
-test('DiziYou fixture resolves title, episode, HLS and Referer without real network',async()=>{
+test('DiziYou current .love selectors follow the actual show episode and player iframe',async()=>{
  const requests=[];
  const scraper=manifest.scrapers.find(s=>s.id==='mum_diziyou');
  const {provider,reports}=load(scraper,async url=>{
   requests.push(url);
   if(url.includes('api.themoviedb.org'))return {ok:true,json:async()=>({name:'Fixture Show',original_name:'Fixture Show'})};
-  if(url.includes('?s='))return {ok:true,text:async()=>'<div id="list-series"><a href="https://www.diziyou.one/fixture-show/">Fixture Show</a></div>'};
-  if(url.includes('fixture-show-1-sezon-2-bolum'))return {ok:true,text:async()=>'<iframe id="diziyouPlayer" src="https://example.invalid/987.html"></iframe>turkceAltyazili'};
+  if(url.includes('?s='))return {ok:true,text:async()=>'<main id="content"><div class="cat-img"><a href="https://www.diziyou.love/fixture-show2/"><img alt="Fixture Show"><span id="dizi-ismi">Fixture Show</span></a></div></main>'};
+  if(url==='https://www.diziyou.love/fixture-show2/')return {ok:true,text:async()=>'<main id="content"><a href="https://www.diziyou.love/fixture-show-1-sezon-2-bolum/">1. Sezon 2. Bölüm</a><a href="/fixture-show-10-sezon-2-bolum/">wrong season</a></main>'};
+  if(url==='https://www.diziyou.love/fixture-show-1-sezon-2-bolum/')return {ok:true,text:async()=>'<iframe id="diziyouPlayer" src="https://www.diziyou.love/player/987.html"></iframe>'};
+  if(url==='https://www.diziyou.love/player/987.html')return {ok:true,text:async()=>'<video><source id="diziyouSource" src="https://storage.diziyou.love/episodes/987/play.m3u8"></video><script>DYSubtitles.init(player,{trUrl:"https://storage.diziyou.love/subtitles/987/tr.vtt",enUrl:"https://storage.diziyou.love/subtitles/987/en.vtt"});</script>'};
   throw Error('Unexpected fixture request');
  });
  const result=await provider.getStreams('123','tv',1,2);
- assert.equal(result.length,1);assert.match(result[0].url,/episodes\/987\/play.m3u8$/);assert.ok(result[0].headers.Referer);assert.equal(requests.length,3);assert.match(reports.at(-1),/sources-found/);
+ assert.equal(result.length,1);assert.equal(result[0].url,'https://storage.diziyou.love/episodes/987/play.m3u8');assert.equal(result[0].subtitles.length,2);assert.ok(result[0].headers.Referer.includes('/player/987.html'));assert.equal(requests.length,5);assert.match(reports.at(-1),/sources-found/);
 });

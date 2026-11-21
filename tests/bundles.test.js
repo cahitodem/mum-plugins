@@ -42,3 +42,18 @@ test('DiziYou current .love selectors follow the actual show episode and player 
  const result=await provider.getStreams('123','tv',1,2);
  assert.equal(result.length,1);assert.equal(result[0].url,'https://storage.diziyou.love/episodes/987/play.m3u8');assert.equal(result[0].subtitles.length,2);assert.ok(result[0].headers.Referer.includes('/player/987.html'));assert.equal(requests.length,5);assert.match(reports.at(-1),/sources-found/);
 });
+test('FilmModu resolves TV metadata, exact season episode, and page-selected player host',async()=>{
+ const requests=[];
+ const scraper=manifest.scrapers.find(s=>s.id==='mum_filmmodu');
+ const {provider,reports}=load(scraper,async(url,options={})=>{
+  requests.push(String(url));
+  if(String(url).includes('/3/tv/1399?'))return {ok:true,json:async()=>({name:'Game of Thrones',original_name:'Game of Thrones',first_air_date:'2011-04-17'})};
+  if(String(url).includes('yabancidizifilmizle.click/ara?q='))return {ok:true,text:async()=>'<main><section><h2 class="section-title">Diziler</h2><a href="/dizi/game-of-thrones"><img alt="Game of Thrones"></a></section></main>'};
+  if(String(url)==='https://yabancidizifilmizle.click/dizi/game-of-thrones?sezon=5')return {ok:true,text:async()=>'<a href="/dizi/game-of-thrones/sezon-5/bolum-1">5. Sezon 1. Bölüm</a><a href="/dizi/game-of-thrones/sezon-5/bolum-6">5. Sezon 6. Bölüm</a>'};
+  if(String(url)==='https://yabancidizifilmizle.click/dizi/game-of-thrones/sezon-5/bolum-6')return {ok:true,text:async()=>'<div data-pv="fixture-marker"></div><script src="https://play2.pilavyerplay.top/assets/js/core.js"></script>'};
+  if(String(url).startsWith('https://play2.pilavyerplay.top/assets/js/s.php?s='))return {ok:true,text:async()=>'<script>window.__PLAYER__ = {"stream":"https://play2.pilavyerplay.top/api/stream.php?sig=fixture","audios":[{"label":"Türkçe"}],"subs":[]};</script>'};
+  throw Error('Unexpected fixture request');
+ });
+ const result=await provider.getStreams('1399','tv',5,6);
+ assert.equal(result.length,1);assert.match(result[0].url,/play2\.pilavyerplay\.top\/api\/stream\.php/);assert.equal(result[0].title,'Türkçe • 1080p FHD');assert.ok(result[0].headers.Referer.includes('/assets/js/s.php?'));assert.equal(requests.length,5);assert.match(reports.at(-1),/sources-found/);
+});

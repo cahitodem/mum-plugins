@@ -1,4 +1,4 @@
-/* MUM Plugins 0.1.0; modified 2026-11-21; derived from Anthology 1.8.39. GPL-3.0-only. */
+/* MUM Plugins 0.1.1; modified 2026-11-21; derived from Anthology 1.8.39. GPL-3.0-only. */
 // Suppress provider logs which may contain signed URLs.
 var console = {log:function(){},info:function(){},warn:function(){},error:function(){},debug:function(){}};
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -360,7 +360,7 @@ var require_adapter = __commonJS({
     }
     function adapt2(provider2, source, emit, options) {
       if (!provider2 || typeof provider2.getStreams !== "function") throw new Error("MISSING_EXPORT");
-      var limit = options && options.timeoutMs || 45e3;
+      var limit = options && options.timeoutMs || source.timeoutMs || 12e3;
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;

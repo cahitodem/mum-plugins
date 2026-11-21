@@ -56,9 +56,10 @@ function timeoutSignal(ms) {
 }
 
 // ── Yardımcı: TMDB'den film bilgisi çek ─────────────────────
-async function fetchTmdbInfo(tmdbId) {
+async function fetchTmdbInfo(tmdbId, mediaType) {
   let cleanId = String(tmdbId || '').trim();
   if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
+  const isTv = mediaType === 'tv' || mediaType === 'series';
 
   let numericId = cleanId;
   if (cleanId.startsWith('tt')) {
@@ -66,14 +67,13 @@ async function fetchTmdbInfo(tmdbId) {
       const fRes = await fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
       if (fRes.ok) {
         const fData = await fRes.json();
-        if (fData.movie_results && fData.movie_results.length > 0) {
-          numericId = fData.movie_results[0].id;
-        }
+        const matches = isTv ? fData.tv_results : fData.movie_results;
+        if (matches && matches.length > 0) numericId = matches[0].id;
       }
     } catch (e) {}
   }
 
-  var url = 'https://api.themoviedb.org/3/movie/' + numericId
+  var url = 'https://api.themoviedb.org/3/' + (isTv ? 'tv/' : 'movie/') + numericId
     + '?api_key=' + TMDB_API_KEY
     + '&language=tr-TR';
 
@@ -81,9 +81,9 @@ async function fetchTmdbInfo(tmdbId) {
   if (!r.ok) throw new Error('TMDB yanıt vermedi: ' + r.status);
   const data = await r.json();
   return {
-    titleTr:  data.title || '',
-    titleEn:  data.original_title || '',
-    year:     data.release_date ? data.release_date.slice(0, 4) : ''
+    titleTr:  isTv ? (data.name || '') : (data.title || ''),
+    titleEn:  isTv ? (data.original_name || '') : (data.original_title || ''),
+    year:     (isTv ? data.first_air_date : data.release_date) ? (isTv ? data.first_air_date : data.release_date).slice(0, 4) : ''
   };
 }
 
@@ -422,9 +422,11 @@ function fetchStreamsFromAlt(altLink, filmUrl) {
 }
 
 // ── FilmModu Ağı Yedek Kaynağı (filmmodu.live / Pilavyer) ────
-function fetchStreamsFromLive(rawTitle, year) {
+function fetchStreamsFromLive(rawTitle, year, mediaType, seasonNum, episodeNum) {
   var q = cleanTitle(rawTitle);
   if (!q) return Promise.resolve([]);
+  var isTv = mediaType === 'tv' || mediaType === 'series';
+  var contentPath = isTv ? '/dizi/' : '/film/';
 
   var searchUrl = LIVE_URL + '/ara?q=' + encodeURIComponent(q);
   console.log('[FilmModu.live] Aranıyor: ' + searchUrl);
@@ -454,20 +456,21 @@ function fetchStreamsFromLive(rawTitle, year) {
       var filmHref = null;
       var normQ = normalizeForUrl(q);
 
-      // Sadece 'Filmler' bölümündeki sonuçları tara
+      // Film ve dizi sonuçlarını ayrı bölümlerden tara.
       var filmSection = null;
       $('section').each(function() {
-        if ($(this).find('h2.section-title').text().indexOf('Filmler') !== -1) {
+        var sectionTitle = $(this).find('h2.section-title').text().toLowerCase();
+        if (isTv ? /diziler|series/.test(sectionTitle) : /filmler|films/.test(sectionTitle)) {
           filmSection = $(this);
         }
       });
 
       var container = filmSection || $('main');
       var candidates = [];
-      container.find('a[href*="/film/"]').each(function() {
+      container.find('a[href*="' + contentPath + '"]').each(function() {
         var href = $(this).attr('href') || '';
-        if (href.indexOf('https://') !== 0) href = LIVE_URL + href;
-        var candTitle = $(this).find('h3').text().trim() || $(this).find('img').attr('alt') || '';
+        try { href = new URL(href, LIVE_URL).href; } catch (_) { return; }
+        var candTitle = $(this).find('h3, h4').first().text().trim() || $(this).find('img').attr('alt') || $(this).text().trim();
         var candYear = $(this).find('p').text().trim() || '';
         if (!candidates.some(function(c) { return c.href === href; })) {
           candidates.push({ href: href, title: candTitle, year: candYear });
@@ -517,18 +520,54 @@ function fetchStreamsFromLive(rawTitle, year) {
       var sigPage = timeoutSignal(12000);
       var pageOpts = { headers: liveHeaders };
       if (sigPage) pageOpts.signal = sigPage;
+      var contentLookupUrl = filmHref;
+      if (isTv) {
+        var seasonUrl = new URL(filmHref);
+        seasonUrl.searchParams.set('sezon', String(Number(seasonNum)));
+        contentLookupUrl = seasonUrl.href;
+      }
 
-      return fetch(filmHref, pageOpts)
+      return fetch(contentLookupUrl, pageOpts)
         .then(function(pr) { return pr.ok ? pr.text() : ''; })
         .then(function(pHtml) {
           if (!pHtml) return [];
+          var contentPageUrl = filmHref;
+          if (isTv) {
+            var expectedEpisode = new RegExp('/sezon-' + Number(seasonNum) + '/bolum-' + Number(episodeNum) + '/?$', 'i');
+            var episodeHref = null;
+            var $show = cheerio.load(pHtml);
+            $show('a[href*="/dizi/"]').each(function() {
+              var href = $(this).attr('href') || '';
+              var absolute;
+              try { absolute = new URL(href, LIVE_URL).href; } catch (_) { return; }
+              if (expectedEpisode.test(new URL(absolute).pathname)) { episodeHref = absolute; return false; }
+            });
+            if (!episodeHref) return [];
+            contentPageUrl = episodeHref;
+            var episodeOpts = { headers: liveHeaders };
+            var sigEpisode = timeoutSignal(12000);
+            if (sigEpisode) episodeOpts.signal = sigEpisode;
+            return fetch(episodeHref, episodeOpts).then(function(er) {
+              return er.ok ? er.text() : '';
+            }).then(function(episodeHtml) {
+              if (!episodeHtml) return [];
+              return resolveLivePage(episodeHtml, contentPageUrl);
+            });
+          }
+          return resolveLivePage(pHtml, contentPageUrl);
+        });
+
+      function resolveLivePage(pHtml, contentPageUrl) {
           var pvMatch = pHtml.match(/data-pv="([^"]+)"/);
           if (!pvMatch) return [];
           var pv = pvMatch[1];
-          var playerEmbedUrl = PLAYER_HOST + '/assets/js/s.php?s=' + encodeURIComponent(pv);
+          var coreMatch = pHtml.match(/<script\b[^>]*src=["'](?:https?:)?\/\/([^/"']+\.pilavyerplay\.top)\/assets\/js\/core\.js/i);
+          var playerHost = PLAYER_HOST;
+          if (coreMatch && /^[a-z0-9.-]+\.pilavyerplay\.top$/i.test(coreMatch[1])) playerHost = 'https://' + coreMatch[1];
+          var playerEmbedUrl = playerHost + '/assets/js/s.php?s=' + encodeURIComponent(pv);
 
           var sigEmb = timeoutSignal(12000);
-          var embOpts = { headers: { 'Referer': LIVE_URL + '/', 'User-Agent': HEADERS['User-Agent'] } };
+          var embOpts = { headers: { 'Referer': contentPageUrl, 'User-Agent': HEADERS['User-Agent'] } };
           if (sigEmb) embOpts.signal = sigEmb;
 
           return fetch(playerEmbedUrl, embOpts)
@@ -563,7 +602,7 @@ function fetchStreamsFromLive(rawTitle, year) {
 
               var liveStreams = [];
               var streamHeaders = {
-                'Referer':    PLAYER_HOST + '/',
+                'Referer':    playerEmbedUrl,
                 'User-Agent': HEADERS['User-Agent']
               };
 
@@ -595,7 +634,7 @@ function fetchStreamsFromLive(rawTitle, year) {
               console.log('[FilmModu.live] Çözülen akış sayısı: ' + liveStreams.length);
               return liveStreams;
             });
-        });
+      }
     })
     .catch(function(err) {
       console.log('[FilmModu.live] Arama hatası: ' + err.message);
@@ -608,6 +647,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   if (typeof tmdbId === 'object' && tmdbId && tmdbId.id) {
     return getStreams(tmdbId.id, mediaType || 'movie', seasonNum, episodeNum);
   }
+  var requestedType = mediaType === 'series' ? 'tv' : mediaType;
   if (typeof tmdbId === 'string' && tmdbId.startsWith('filmmodu:')) {
     var slug = tmdbId.replace('filmmodu:', '');
     var filmUrl = BASE_URL + '/' + slug;
@@ -632,7 +672,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   }
   console.log('[FilmModu] === Başlıyor | TMDB ID: ' + tmdbId + ' ===');
 
-  return fetchTmdbInfo(tmdbId)
+  return fetchTmdbInfo(tmdbId, requestedType)
     .then(function(info) {
       if (!info.titleEn && !info.titleTr) {
         console.log('[FilmModu] TMDB başlık bulunamadı');
@@ -640,6 +680,15 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }
 
       console.log('[FilmModu] Film: ' + info.titleEn + ' / ' + info.titleTr + ' (' + info.year + ')');
+
+      if (requestedType === 'tv') {
+        if (!Number.isInteger(Number(seasonNum)) || Number(seasonNum) < 0 || !Number.isInteger(Number(episodeNum)) || Number(episodeNum) < 1) return [];
+        return fetchStreamsFromLive(info.titleEn || info.titleTr, info.year, 'tv', Number(seasonNum), Number(episodeNum))
+          .then(function(streams) {
+            if (streams.length || !info.titleTr || info.titleTr === info.titleEn) return streams;
+            return fetchStreamsFromLive(info.titleTr, info.year, 'tv', Number(seasonNum), Number(episodeNum));
+          });
+      }
 
       // Önce orijinal başlıkla ara, bulamazsa Türkçeyle dene
       return searchFilmModu(info.titleEn, info.year)

@@ -18,9 +18,9 @@ Bu doğrulama kod incelemesine dayanır. Yerel testlerde Node VM kullanıldı; J
 ## Sonraki sağlayıcı işleri
 
 1. Kullanıcının kurulu Nuvio sürümü ve her başarısız örneğin içerik kimliğiyle tekrar üretim kaydı alın.
-2. DiziYou: TMDB TV eşleştirmesi → arama seçicileri → bölüm URL'si → `diziyouPlayer` seçicisi. Sentetik başarılı örnek geçiyor; güncel site HTML'si henüz doğrulanmadı.
+2. DiziYou: Güncel `.love` arama → gerçek sezon/bölüm → player sayfası zinciri sentetik fixture ve Breaking Bad S5E16 canlı kaynak aramasında sonuç verdi. Oynatma doğrulanmadı.
 3. HDFilmCehennemi: içerik eşleştirmesi, HTTP durumu ve embed ayrıştırmasını ayrı aşamalarda ölçün. `[]` sonuca bakarak engelleme veya bölge kısıtı iddia etmeyin.
-4. FilmModu: `about:error` sayfasının kaynağı ve HTTP/redirect zincirini belirleyin. MUM geçersiz URL'yi süzer; bu, site hatasının düzeltildiği anlamına gelmez.
+4. FilmModu: `tv` türü önceki kodda yanlışlıkla TMDB film endpoint'ine gidiyor ve yedek aramada yalnız `/film/` sonuçları inceleniyordu. TV metadata, exact season/episode ve sayfanın ilan ettiği player hostu eklendi; GOT S1E1 canlı denemesi kaynak döndürdü. Oynatma doğrulanmadı.
 5. Üç sağlayıcı için kişisel veri içermeyen HTML fixture'ları ekleyin; ardından yalnız kanıtlanan parser farklarını düzeltin. Oynatma doğrulamasını ayrı Windows matrisiyle yapın.
 
 Yeni build, adapter ve manifest testleri bu ilk geliştirme altyapısını doğrular. Canlı kaynak erişimi ve video oynatma bu teslimatta doğrulanmamıştır.

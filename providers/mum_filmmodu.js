@@ -1,4 +1,4 @@
-/* MUM Plugins 0.1.0; modified 2026-11-21; derived from Anthology 1.8.39. GPL-3.0-only. */
+/* MUM Plugins 0.1.1; modified 2026-11-21; derived from Anthology 1.8.39. GPL-3.0-only. */
 // Suppress provider logs which may contain signed URLs.
 var console = {log:function(){},info:function(){},warn:function(){},error:function(){},debug:function(){}};
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -235,31 +235,31 @@ var require_filmmodu = __commonJS({
       }
       return null;
     }
-    function fetchTmdbInfo(tmdbId) {
+    function fetchTmdbInfo(tmdbId, mediaType) {
       return __async(this, null, function* () {
         let cleanId = String(tmdbId || "").trim();
         if (cleanId.includes(":")) cleanId = cleanId.split(":")[0];
+        const isTv = mediaType === "tv" || mediaType === "series";
         let numericId = cleanId;
         if (cleanId.startsWith("tt")) {
           try {
             const fRes = yield fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
             if (fRes.ok) {
               const fData = yield fRes.json();
-              if (fData.movie_results && fData.movie_results.length > 0) {
-                numericId = fData.movie_results[0].id;
-              }
+              const matches = isTv ? fData.tv_results : fData.movie_results;
+              if (matches && matches.length > 0) numericId = matches[0].id;
             }
           } catch (e) {
           }
         }
-        var url = "https://api.themoviedb.org/3/movie/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR";
+        var url = "https://api.themoviedb.org/3/" + (isTv ? "tv/" : "movie/") + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR";
         const r = yield fetch(url);
         if (!r.ok) throw new Error("TMDB yan\u0131t vermedi: " + r.status);
         const data = yield r.json();
         return {
-          titleTr: data.title || "",
-          titleEn: data.original_title || "",
-          year: data.release_date ? data.release_date.slice(0, 4) : ""
+          titleTr: isTv ? data.name || "" : data.title || "",
+          titleEn: isTv ? data.original_name || "" : data.original_title || "",
+          year: (isTv ? data.first_air_date : data.release_date) ? (isTv ? data.first_air_date : data.release_date).slice(0, 4) : ""
         };
       });
     }
@@ -525,9 +525,11 @@ var require_filmmodu = __commonJS({
         return [];
       });
     }
-    function fetchStreamsFromLive(rawTitle, year) {
+    function fetchStreamsFromLive(rawTitle, year, mediaType, seasonNum, episodeNum) {
       var q = cleanTitle(rawTitle);
       if (!q) return Promise.resolve([]);
+      var isTv = mediaType === "tv" || mediaType === "series";
+      var contentPath = isTv ? "/dizi/" : "/film/";
       var searchUrl = LIVE_URL + "/ara?q=" + encodeURIComponent(q);
       console.log("[FilmModu.live] Aran\u0131yor: " + searchUrl);
       var liveHeaders = {
@@ -551,16 +553,21 @@ var require_filmmodu = __commonJS({
         var normQ = normalizeForUrl(q);
         var filmSection = null;
         $("section").each(function() {
-          if ($(this).find("h2.section-title").text().indexOf("Filmler") !== -1) {
+          var sectionTitle = $(this).find("h2.section-title").text().toLowerCase();
+          if (isTv ? /diziler|series/.test(sectionTitle) : /filmler|films/.test(sectionTitle)) {
             filmSection = $(this);
           }
         });
         var container = filmSection || $("main");
         var candidates = [];
-        container.find('a[href*="/film/"]').each(function() {
+        container.find('a[href*="' + contentPath + '"]').each(function() {
           var href = $(this).attr("href") || "";
-          if (href.indexOf("https://") !== 0) href = LIVE_URL + href;
-          var candTitle = $(this).find("h3").text().trim() || $(this).find("img").attr("alt") || "";
+          try {
+            href = new URL(href, LIVE_URL).href;
+          } catch (_) {
+            return;
+          }
+          var candTitle = $(this).find("h3, h4").first().text().trim() || $(this).find("img").attr("alt") || $(this).text().trim();
           var candYear = $(this).find("p").text().trim() || "";
           if (!candidates.some(function(c) {
             return c.href === href;
@@ -608,16 +615,58 @@ var require_filmmodu = __commonJS({
         var sigPage = timeoutSignal(12e3);
         var pageOpts = { headers: liveHeaders };
         if (sigPage) pageOpts.signal = sigPage;
-        return fetch(filmHref, pageOpts).then(function(pr) {
+        var contentLookupUrl = filmHref;
+        if (isTv) {
+          var seasonUrl = new URL(filmHref);
+          seasonUrl.searchParams.set("sezon", String(Number(seasonNum)));
+          contentLookupUrl = seasonUrl.href;
+        }
+        return fetch(contentLookupUrl, pageOpts).then(function(pr) {
           return pr.ok ? pr.text() : "";
         }).then(function(pHtml) {
           if (!pHtml) return [];
+          var contentPageUrl = filmHref;
+          if (isTv) {
+            var expectedEpisode = new RegExp("/sezon-" + Number(seasonNum) + "/bolum-" + Number(episodeNum) + "/?$", "i");
+            var episodeHref = null;
+            var $show = cheerio.load(pHtml);
+            $show('a[href*="/dizi/"]').each(function() {
+              var href = $(this).attr("href") || "";
+              var absolute;
+              try {
+                absolute = new URL(href, LIVE_URL).href;
+              } catch (_) {
+                return;
+              }
+              if (expectedEpisode.test(new URL(absolute).pathname)) {
+                episodeHref = absolute;
+                return false;
+              }
+            });
+            if (!episodeHref) return [];
+            contentPageUrl = episodeHref;
+            var episodeOpts = { headers: liveHeaders };
+            var sigEpisode = timeoutSignal(12e3);
+            if (sigEpisode) episodeOpts.signal = sigEpisode;
+            return fetch(episodeHref, episodeOpts).then(function(er) {
+              return er.ok ? er.text() : "";
+            }).then(function(episodeHtml) {
+              if (!episodeHtml) return [];
+              return resolveLivePage(episodeHtml, contentPageUrl);
+            });
+          }
+          return resolveLivePage(pHtml, contentPageUrl);
+        });
+        function resolveLivePage(pHtml, contentPageUrl) {
           var pvMatch = pHtml.match(/data-pv="([^"]+)"/);
           if (!pvMatch) return [];
           var pv = pvMatch[1];
-          var playerEmbedUrl = PLAYER_HOST + "/assets/js/s.php?s=" + encodeURIComponent(pv);
+          var coreMatch = pHtml.match(/<script\b[^>]*src=["'](?:https?:)?\/\/([^/"']+\.pilavyerplay\.top)\/assets\/js\/core\.js/i);
+          var playerHost = PLAYER_HOST;
+          if (coreMatch && /^[a-z0-9.-]+\.pilavyerplay\.top$/i.test(coreMatch[1])) playerHost = "https://" + coreMatch[1];
+          var playerEmbedUrl = playerHost + "/assets/js/s.php?s=" + encodeURIComponent(pv);
           var sigEmb = timeoutSignal(12e3);
-          var embOpts = { headers: { "Referer": LIVE_URL + "/", "User-Agent": HEADERS["User-Agent"] } };
+          var embOpts = { headers: { "Referer": contentPageUrl, "User-Agent": HEADERS["User-Agent"] } };
           if (sigEmb) embOpts.signal = sigEmb;
           return fetch(playerEmbedUrl, embOpts).then(function(er) {
             return er.ok ? er.text() : "";
@@ -652,7 +701,7 @@ var require_filmmodu = __commonJS({
             }
             var liveStreams = [];
             var streamHeaders = {
-              "Referer": PLAYER_HOST + "/",
+              "Referer": playerEmbedUrl,
               "User-Agent": HEADERS["User-Agent"]
             };
             var audios = Array.isArray(pData.audios) && pData.audios.length > 0 ? pData.audios : [{ label: "T\xFCrk\xE7e Dublaj" }];
@@ -679,7 +728,7 @@ var require_filmmodu = __commonJS({
             console.log("[FilmModu.live] \xC7\xF6z\xFClen ak\u0131\u015F say\u0131s\u0131: " + liveStreams.length);
             return liveStreams;
           });
-        });
+        }
       }).catch(function(err) {
         console.log("[FilmModu.live] Arama hatas\u0131: " + err.message);
         return [];
@@ -689,6 +738,7 @@ var require_filmmodu = __commonJS({
       if (typeof tmdbId === "object" && tmdbId && tmdbId.id) {
         return getStreams(tmdbId.id, mediaType || "movie", seasonNum, episodeNum);
       }
+      var requestedType = mediaType === "series" ? "tv" : mediaType;
       if (typeof tmdbId === "string" && tmdbId.startsWith("filmmodu:")) {
         var slug = tmdbId.replace("filmmodu:", "");
         var filmUrl = BASE_URL + "/" + slug;
@@ -713,12 +763,19 @@ var require_filmmodu = __commonJS({
         });
       }
       console.log("[FilmModu] === Ba\u015Fl\u0131yor | TMDB ID: " + tmdbId + " ===");
-      return fetchTmdbInfo(tmdbId).then(function(info) {
+      return fetchTmdbInfo(tmdbId, requestedType).then(function(info) {
         if (!info.titleEn && !info.titleTr) {
           console.log("[FilmModu] TMDB ba\u015Fl\u0131k bulunamad\u0131");
           return [];
         }
         console.log("[FilmModu] Film: " + info.titleEn + " / " + info.titleTr + " (" + info.year + ")");
+        if (requestedType === "tv") {
+          if (!Number.isInteger(Number(seasonNum)) || Number(seasonNum) < 0 || !Number.isInteger(Number(episodeNum)) || Number(episodeNum) < 1) return [];
+          return fetchStreamsFromLive(info.titleEn || info.titleTr, info.year, "tv", Number(seasonNum), Number(episodeNum)).then(function(streams) {
+            if (streams.length || !info.titleTr || info.titleTr === info.titleEn) return streams;
+            return fetchStreamsFromLive(info.titleTr, info.year, "tv", Number(seasonNum), Number(episodeNum));
+          });
+        }
         return searchFilmModu(info.titleEn, info.year).then(function(filmUrl2) {
           if (!filmUrl2 && info.titleTr && info.titleTr !== info.titleEn) {
             console.log("[FilmModu] Orijinal ba\u015Fl\u0131kla bulunamad\u0131, T\xFCrk\xE7e deneniyor: " + info.titleTr);
@@ -892,7 +949,7 @@ var require_adapter = __commonJS({
     }
     function adapt2(provider2, source, emit, options) {
       if (!provider2 || typeof provider2.getStreams !== "function") throw new Error("MISSING_EXPORT");
-      var limit = options && options.timeoutMs || 45e3;
+      var limit = options && options.timeoutMs || source.timeoutMs || 12e3;
       return { getStreams: function(id, type, season, episode) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
@@ -948,7 +1005,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_filmmodu();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "filmmodu", "id": "mum_filmmodu", "name": "FilmModu", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "about:error", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "filmmodu", "id": "mum_filmmodu", "name": "FilmModu", "supportedTypes": ["movie", "tv"], "enabled": true, "timeoutMs": 15e3, "observation": "sources-found", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

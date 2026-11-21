@@ -14,7 +14,7 @@ function normalizeStreams(raw) {
 }
 function adapt(provider, source, emit, options) {
   if (!provider || typeof provider.getStreams !== 'function') throw new Error('MISSING_EXPORT');
-  var limit = options && options.timeoutMs || 45000;
+  var limit = options && options.timeoutMs || source.timeoutMs || 12000;
   return {getStreams:async function(id,type,season,episode) {
     var started=Date.now(), timer, timedOut=false;
     var record={provider:source.id,status:'started',count:0,rejected:0,elapsedMs:0,playback:'unverified'};

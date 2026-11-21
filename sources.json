@@ -40,19 +40,6 @@
       "playback": "unverified"
     },
     {
-      "key": "filmmodu",
-      "id": "mum_filmmodu",
-      "name": "FilmModu",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "timeoutMs": 15000,
-      "observation": "sources-found",
-      "playback": "unverified"
-    },
-    {
       "key": "hdfilmcehennemi",
       "id": "mum_hdfilmcehennemi",
       "name": "HDFilmCehennemi",
@@ -145,42 +132,6 @@
       ],
       "enabled": true,
       "observation": "sources-found",
-      "playback": "unverified"
-    },
-    {
-      "key": "sinemacx",
-      "id": "mum_sinemacx",
-      "name": "SinemaCX",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "unverified",
-      "playback": "unverified"
-    },
-    {
-      "key": "sinewix",
-      "id": "mum_sinewix",
-      "name": "SineWix",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "unverified",
-      "playback": "unverified"
-    },
-    {
-      "key": "dizimom",
-      "id": "mum_dizimom",
-      "name": "DiziMom",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "unverified",
       "playback": "unverified"
     },
     {

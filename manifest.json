@@ -41,18 +41,6 @@
       "enabled": true
     },
     {
-      "id": "mum_filmmodu",
-      "name": "FilmModu",
-      "version": "0.1.2",
-      "author": "Anthology contributors; MUM contributors",
-      "filename": "providers/mum_filmmodu.js",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true
-    },
-    {
       "id": "mum_hdfilmcehennemi",
       "name": "HDFilmCehennemi",
       "version": "0.1.2",
@@ -141,42 +129,6 @@
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_webteizle.js",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true
-    },
-    {
-      "id": "mum_sinemacx",
-      "name": "SinemaCX",
-      "version": "0.1.2",
-      "author": "Anthology contributors; MUM contributors",
-      "filename": "providers/mum_sinemacx.js",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true
-    },
-    {
-      "id": "mum_sinewix",
-      "name": "SineWix",
-      "version": "0.1.2",
-      "author": "Anthology contributors; MUM contributors",
-      "filename": "providers/mum_sinewix.js",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true
-    },
-    {
-      "id": "mum_dizimom",
-      "name": "DiziMom",
-      "version": "0.1.2",
-      "author": "Anthology contributors; MUM contributors",
-      "filename": "providers/mum_dizimom.js",
       "supportedTypes": [
         "movie",
         "tv"

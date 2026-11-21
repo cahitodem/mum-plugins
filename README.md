@@ -2,7 +2,7 @@
 
 Kişisel MUM projesi için Anthology v1.8.39 tabanlı Nuvio Desktop film/dizi eklenti deposu. Güncel geliştirme sürümü: **0.1.2**. Windows hedeflenir; Android TV testi yapılmamıştır.
 
-Kaynak bulunması, HTTP 200 alınması veya bir HLS parçasının indirilmesi **oynatma doğrulaması değildir**. Son canlı kontrollerde DiziYou (Breaking Bad S5E16) ve FilmModu (Game of Thrones S1E1) birer kaynak döndürdü; Windows Nuvio oynatması doğrulanmadı.
+Kaynak bulunması, HTTP 200 alınması veya bir HLS parçasının indirilmesi **oynatma doğrulaması değildir**. Son canlı kontrollerde DiziYou (Breaking Bad S5E16) kaynak döndürdü; Windows Nuvio oynatması doğrulanmadı.
 
 ## Kurulum
 
@@ -32,7 +32,6 @@ npm test
 
 ```powershell
 npm run test:provider -- diziyou 1396 tv 1 1
-npm run test:provider -- filmmodu 550 movie
 ```
 
 Bu komutlar videoyu oynatmaz. Çıkış kodu 0, sorgunun tamamlandığını belirtir; kaynak/başarı için JSON `status` alanına bakın. Genel CI testleri ağa çıkmaz. Paketler Node VM içinde sınırlı host modülleriyle yüklenir; bu test gerçek Nuvio/QuickJS ve oynatıcı testi yerine geçmez. DiziYou için sentetik HTML ile arama → bölüm → HLS sonucu da sınanır.
@@ -44,9 +43,8 @@ Aşağıdaki bilgiler kullanıcının **Windows Nuvio + Anthology 1.8.39** testl
 | Sağlayıcı | Kaynak araması | Oynatma |
 |---|---|---|
 | Anthology M3U, DDiziBox, HDFilmDelisi, HDFilmIzle, SetFilmIzle, SezonlukDizi, Vidlink, Vidmody, Webteizle | Kaynak dönmüş | Doğrulanmadı |
-| SinemaCX, SineWix, DiziMom, YabancıDizi, DiziBoxİzle | Yeni eklendi; canlı sorgu yapılmadı | Doğrulanmadı |
+| YabancıDizi, DiziBoxİzle | Yeni eklendi; canlı sorgu yapılmadı | Doğrulanmadı |
 | DiziYou | Güncel `.love` akışıyla kaynak bulundu | Oynatma doğrulanmadı |
-| FilmModu | GOT S1E1 kaynak bulundu; TV desteği eklendi | Oynatma doğrulanmadı |
 | HDFilmCehennemi | Kullanıcı testinde boş | Doğrulanmadı |
 
 Anthology M3U'nun yalnız film/dizi listeleri tutulur; canlı M3U sağlayıcısı ayrıydı ve kaldırıldı. Genel film/dizi siteleri animasyon da içerebilir; film/TV olarak etiketlenmiş her içeriğin türünü bu scraper arayüzüyle kesin filtrelemek mümkün değildir. Animeye özel sağlayıcılar ve anime türü çağrıları kapsam dışıdır.
@@ -55,7 +53,7 @@ Anthology M3U'nun yalnız film/dizi listeleri tutulur; canlı M3U sağlayıcıs�
 
 MUM yalnız `provider`, `status`, `count`, `rejected`, `elapsedMs`, `playback` alanlarını (ve güvenli hata teşhisinde `stage`, `reason`) yazar. Durumlar: `started`, `sources-found`, `empty`, `no-match`, `http-blocked`, `parse-error`, `tmdb-error`, `invalid-results`, `unsupported-type`, `invalid-input`, `timeout`, `error`. Ham hata metni, URL, çerez ve Authorization yazılmaz; upstream sağlayıcı konsol çıktıları derlenmiş modülde susturulur. Nuvio'nun kendi ağ günlükleri bu katmanın kontrolünde değildir.
 
-Adapter bir sağlayıcıyı varsayılan 12 saniyede, FilmModu gibi çok adımlı kaynağı 15 saniyede bekler; Promise zaman aşımında `AbortController` aracılığıyla arka plandaki tüm in-flight fetch istekleri anında iptal edilir. Tekil HTTP istekleri 8 saniye zaman aşımı ile sınırlandırılmıştır. Erişim engelleri (`http-blocked`), eşleşme bulunamaması (`no-match`) ve ayrıştırma bozuklukları (`parse-error`) artık sessizce `empty` olarak yutulmaz; ayrıştırılmış durum olarak bildirilir. Bir `started` kaydı yoksa UI/manifest/yükleme aşamasını kontrol edin.
+Adapter bir sağlayıcıyı varsayılan 12 saniyede bekler; Promise zaman aşımında `AbortController` aracılığıyla arka plandaki tüm in-flight fetch istekleri anında iptal edilir. Tekil HTTP istekleri 8 saniye zaman aşımı ile sınırlandırılmıştır. Erişim engelleri (`http-blocked`), eşleşme bulunamaması (`no-match`) ve ayrıştırma bozuklukları (`parse-error`) artık sessizce `empty` olarak yutulmaz; ayrıştırılmış durum olarak bildirilir. Bir `started` kaydı yoksa UI/manifest/yükleme aşamasını kontrol edin.
 
 Siyah ekran ve ses incelemesi: [Windows tanılama](docs/WINDOWS-DIAGNOSTICS.md). Teknik kanıtlar ve sonraki işler: [inceleme](docs/REVIEW.md). Hata kaydı: [şablon](docs/BUG-REPORT.md).
 

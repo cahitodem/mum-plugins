@@ -125,9 +125,6 @@ var require_config = __commonJS({
           sezonlukdizi: {
             base: "https://sezonlukdizi.cc"
           },
-          dizimom: {
-            base: "https://ddizimom.net"
-          },
           yabancidizi: {
             base: "https://yabancidizi.news"
           },
@@ -136,11 +133,6 @@ var require_config = __commonJS({
           }
         },
         movies: {
-          filmmodu: {
-            base: "https://yabancidizifilmizle.click",
-            live: "https://yabancidizifilmizle.click",
-            player: "https://pilavyerplay.top"
-          },
           hdfilmcehennemi: {
             base: "https://www.hdfilmcehennemi.nl"
           },
@@ -161,14 +153,6 @@ var require_config = __commonJS({
           },
           webteizle: {
             base: "https://webteizle.info"
-          },
-          sinemacx: {
-            base: "https://sinemacc.com",
-            player: "https://player.filmizle.in"
-          },
-          sinewix: {
-            api_base: "https://ydfvfdizipanel.ru/public/api",
-            panel_base: "https://ydfvfdizipanel.ru"
           }
         },
         meta_resolvers: {

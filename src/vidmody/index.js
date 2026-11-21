@@ -1,5 +1,7 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -58,7 +60,8 @@ function parseVixolitySubtitles(playlistText) {
     return subs;
 }
 
-async function getStreams(tmdbId, mediaType, season, episode) {
+async function getStreams(tmdbId, mediaType, season, episode, options) {
+    const signal = options && options.signal;
     try {
         var id = tmdbId;
         var mType = mediaType;
@@ -86,7 +89,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         if (isImdb) {
             imdbId = cleanId;
             var findUrl = 'https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id';
-            var fRes = await fetch(findUrl);
+            var fRes = await fetchWithTimeout(findUrl, { signal }, 8000);
             if (fRes.ok) {
                 var fData = await fRes.json();
                 var match = isTV ? (fData.tv_results && fData.tv_results[0]) : (fData.movie_results && fData.movie_results[0]);
@@ -97,7 +100,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             }
         } else {
             var tmdbUrl = 'https://api.themoviedb.org/3/' + typePath + '/' + cleanId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR&append_to_response=external_ids';
-            var tmdbRes = await fetch(tmdbUrl);
+            var tmdbRes = await fetchWithTimeout(tmdbUrl, { signal }, 8000);
             if (!tmdbRes.ok) return [];
             var d = await tmdbRes.json();
             imdbId = d.external_ids ? d.external_ids.imdb_id : (d.imdb_id || null);
@@ -122,9 +125,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         }
 
         try {
-            var checkRes = await fetch(targetUrl, {
-                headers: VIXOLITY_HEADERS
-            });
+            var checkRes = await fetchWithTimeout(targetUrl, {
+                headers: VIXOLITY_HEADERS,
+                signal: signal
+            }, 8000);
 
             if (checkRes.ok) {
                 var text = await checkRes.text();
@@ -148,11 +152,17 @@ async function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
         } catch (linkErr) {
+            if (linkErr && (linkErr.name === 'AbortError' || linkErr.message === 'TIMEOUT' || linkErr.name === 'ProviderError' || (signal && signal.aborted))) {
+                throw linkErr;
+            }
             return [];
         }
 
         return [];
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         console.error('[Vidmody] Hata:', e.message);
         return [];
     }

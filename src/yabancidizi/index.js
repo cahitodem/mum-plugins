@@ -1,5 +1,7 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -29,44 +31,13 @@ var HEADERS = {
     'Referer': BASE_URL + '/'
 };
 
-function safeFetch(url, options) {
+async function safeFetch(url, options) {
     options = options || {};
-    // Node.js environment fallback for Cloudflare HTTP/1.1 compatibility
-    if (typeof process !== 'undefined' && process.versions && process.versions.node) {
-        try {
-            var https = require('https');
-            var http = require('http');
-            var u = new URL(url);
-            var mod = u.protocol === 'http:' ? http : https;
-            return new Promise(function(resolve, reject) {
-                var req = mod.request({
-                    hostname: u.hostname,
-                    port: u.port || (u.protocol === 'http:' ? 80 : 443),
-                    path: u.pathname + u.search,
-                    method: options.method || 'GET',
-                    headers: options.headers || {}
-                }, function(res) {
-                    var data = '';
-                    res.on('data', function(chunk) { data += chunk; });
-                    res.on('end', function() {
-                        resolve({
-                            ok: res.statusCode >= 200 && res.statusCode < 300,
-                            status: res.statusCode,
-                            headers: res.headers,
-                            text: async function() { return data; },
-                            json: async function() { return JSON.parse(data); }
-                        });
-                    });
-                });
-                req.on('error', reject);
-                if (options.body) req.write(options.body);
-                req.end();
-            });
-        } catch (e) {}
+    var res = await fetchWithTimeout(url, options, 8000);
+    if (res.status === 403) {
+        throw new ProviderError('HTTP_BLOCKED', 'YabancıDizi Cloudflare 403 Forbidden', 'network', 403);
     }
-
-    // QuickJS / Nuvio native fetch
-    return fetch(url, options);
+    return res;
 }
 
 function ultraClean(str) {
@@ -78,7 +49,7 @@ function ultraClean(str) {
         .trim();
 }
 
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
     try {
         var cleanId = String(id || '').trim();
         if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
@@ -88,7 +59,7 @@ async function resolveTmdbInfo(id, mediaType) {
         var origTitle = '';
 
         if (cleanId.startsWith('tt')) {
-            var findRes = await safeFetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id');
+            var findRes = await safeFetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', { signal });
             if (findRes.ok) {
                 var fData = await findRes.json();
                 var item = (mediaType === 'tv' || mediaType === 'series')
@@ -106,7 +77,7 @@ async function resolveTmdbInfo(id, mediaType) {
 
         if (numericId && (!title || !origTitle)) {
             var type = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
-            var tRes = await safeFetch('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR');
+            var tRes = await safeFetch('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal });
             if (tRes.ok) {
                 var tData = await tRes.json();
                 title = tData.name || tData.title || title;
@@ -116,11 +87,14 @@ async function resolveTmdbInfo(id, mediaType) {
 
         return { title: title, origTitle: origTitle, numericId: numericId };
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return { title: '', origTitle: '', numericId: id };
     }
 }
 
-async function searchYabanciDizi(query) {
+async function searchYabanciDizi(query, signal) {
     try {
         var searchUrl = BASE_URL + '/search?qr=' + encodeURIComponent(query);
         var res = await safeFetch(searchUrl, {
@@ -130,7 +104,8 @@ async function searchYabanciDizi(query) {
                 'X-Requested-With': 'XMLHttpRequest',
                 'Accept': 'application/json, text/javascript, */*; q=0.01',
                 'Referer': BASE_URL + '/'
-            }
+            },
+            signal: signal
         });
         if (!res.ok) return [];
         var data = await res.json();
@@ -139,16 +114,19 @@ async function searchYabanciDizi(query) {
         }
         return [];
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return [];
     }
 }
 
-async function getCatalog(args) {
+async function getCatalog(args, signal) {
     try {
         var query = (args && args.search) || (args && args.extra && args.extra.search) || (args && args.query) || '';
         
         if (query) {
-            var results = await searchYabanciDizi(query);
+            var results = await searchYabanciDizi(query, signal);
             var metas = results.map(function(r) {
                 var poster = r.s_image ? (r.s_image.startsWith('http') ? r.s_image : BASE_URL + '/uploads/series/' + r.s_image) : '';
                 return {
@@ -165,7 +143,7 @@ async function getCatalog(args) {
         }
 
         // Homepage popular series
-        var res = await safeFetch(BASE_URL + '/', { headers: HEADERS });
+        var res = await safeFetch(BASE_URL + '/', { headers: HEADERS, signal });
         if (!res.ok) return { metas: [] };
         var html = await res.text();
 
@@ -195,11 +173,14 @@ async function getCatalog(args) {
 
         return { metas: metas };
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return { metas: [] };
     }
 }
 
-async function getMeta(args) {
+async function getMeta(args, signal) {
     try {
         var rawId = (typeof args === 'string') ? args : (args && args.id ? args.id : '');
         if (!rawId) return { meta: null };
@@ -207,7 +188,7 @@ async function getMeta(args) {
         if (rawId.startsWith('yabancidizi:show:')) {
             var showSlug = rawId.replace('yabancidizi:show:', '');
             var showUrl = BASE_URL + '/dizi/' + showSlug;
-            var res = await safeFetch(showUrl, { headers: HEADERS });
+            var res = await safeFetch(showUrl, { headers: HEADERS, signal });
             if (!res.ok) return { meta: null };
             var html = await res.text();
 
@@ -254,17 +235,21 @@ async function getMeta(args) {
 
         return { meta: null };
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return { meta: null };
     }
 }
 
-async function extractStreamsFromEpisodePage(epUrl) {
+async function extractStreamsFromEpisodePage(epUrl, signal) {
     try {
         var epRes = await safeFetch(epUrl, {
             headers: {
                 'User-Agent': HEADERS['User-Agent'],
                 'Referer': BASE_URL + '/'
-            }
+            },
+            signal: signal
         });
         if (!epRes.ok) return [];
         var html = await epRes.text();
@@ -294,7 +279,8 @@ async function extractStreamsFromEpisodePage(epUrl) {
                     headers: {
                         'User-Agent': HEADERS['User-Agent'],
                         'Referer': BASE_URL + '/'
-                    }
+                    },
+                    signal: signal
                 });
                 if (vmRes.ok) {
                     var vmHtml = await vmRes.text();
@@ -323,7 +309,11 @@ async function extractStreamsFromEpisodePage(epUrl) {
                         });
                     }
                 }
-            } catch (err) {}
+            } catch (err) {
+                if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT' || err.name === 'ProviderError' || (signal && signal.aborted))) {
+                    throw err;
+                }
+            }
         }
 
         while ((m = vmRegex.exec(html)) !== null) {
@@ -336,7 +326,8 @@ async function extractStreamsFromEpisodePage(epUrl) {
                     headers: {
                         'User-Agent': HEADERS['User-Agent'],
                         'Referer': BASE_URL + '/'
-                    }
+                    },
+                    signal: signal
                 });
                 if (vmRes2.ok) {
                     var vmHtml2 = await vmRes2.text();
@@ -363,19 +354,27 @@ async function extractStreamsFromEpisodePage(epUrl) {
                         });
                     }
                 }
-            } catch (e) {}
+            } catch (e) {
+                if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+                    throw e;
+                }
+            }
         }
 
         return streams;
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return [];
     }
 }
 
-async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
+    const signal = options && options.signal;
     try {
         if (typeof tmdbIdOrArgs === 'object' && tmdbIdOrArgs && tmdbIdOrArgs.id) {
-            return getStreams(tmdbIdOrArgs.id, mediaType || tmdbIdOrArgs.type, seasonNum || tmdbIdOrArgs.season, episodeNum || tmdbIdOrArgs.episode);
+            return getStreams(tmdbIdOrArgs.id, mediaType || tmdbIdOrArgs.type, seasonNum || tmdbIdOrArgs.season, episodeNum || tmdbIdOrArgs.episode, options);
         }
 
         if (typeof tmdbIdOrArgs === 'string' && tmdbIdOrArgs.startsWith('yabancidizi:ep:')) {
@@ -384,27 +383,27 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             var s = parts[1] || '1';
             var e = parts[2] || '1';
             var epUrl = BASE_URL + '/dizi/' + sSlug + '/sezon-' + s + '/bolum-' + e;
-            return await extractStreamsFromEpisodePage(epUrl);
+            return await extractStreamsFromEpisodePage(epUrl, signal);
         }
 
         if (typeof tmdbIdOrArgs === 'string' && tmdbIdOrArgs.startsWith('yabancidizi:show:')) {
-            var showMeta = await getMeta(tmdbIdOrArgs);
+            var showMeta = await getMeta(tmdbIdOrArgs, signal);
             if (showMeta && showMeta.meta && Array.isArray(showMeta.meta.videos) && showMeta.meta.videos.length > 0) {
-                return await getStreams(showMeta.meta.videos[0].id);
+                return await getStreams(showMeta.meta.videos[0].id, mediaType, seasonNum, episodeNum, options);
             }
         }
 
         var season = parseInt(seasonNum) || 1;
         var episode = parseInt(episodeNum) || 1;
 
-        var info = await resolveTmdbInfo(tmdbIdOrArgs, mediaType);
+        var info = await resolveTmdbInfo(tmdbIdOrArgs, mediaType, signal);
         var searchTitles = [info.origTitle, info.title].filter(Boolean);
         if (searchTitles.length === 0) return [];
 
         for (var title of searchTitles) {
-            var results = await searchYabanciDizi(title);
+            var results = await searchYabanciDizi(title, signal);
             if (results.length === 0) {
-                var cat = await getCatalog({ query: title });
+                var cat = await getCatalog({ query: title }, signal);
                 if (cat && cat.metas && cat.metas.length > 0) {
                     results = cat.metas.map(function(m) {
                         return {
@@ -444,12 +443,15 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             if (!matchedShow || !matchedShow.s_link) continue;
 
             var targetEpUrl = BASE_URL + '/dizi/' + matchedShow.s_link + '/sezon-' + season + '/bolum-' + episode;
-            var streams = await extractStreamsFromEpisodePage(targetEpUrl);
+            var streams = await extractStreamsFromEpisodePage(targetEpUrl, signal);
             if (streams.length > 0) return streams;
         }
 
         return [];
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return [];
     }
 }

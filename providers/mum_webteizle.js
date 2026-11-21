@@ -194,11 +194,103 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/http.js
+var require_http = __commonJS({
+  "src/shared/http.js"(exports2, module2) {
+    var DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    function timeoutSignal(ms) {
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        return AbortSignal.timeout(ms);
+      }
+      var controller = new AbortController();
+      setTimeout(function() {
+        controller.abort(new Error("TIMEOUT"));
+      }, ms);
+      return controller.signal;
+    }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
+    function fetchWithTimeout(url, options, ms) {
+      ms = ms || 8e3;
+      options = options || {};
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
+      }
+      if (!options.headers) {
+        options.headers = {};
+      }
+      if (!options.headers["User-Agent"] && !options.headers["user-agent"]) {
+        options.headers["User-Agent"] = DEFAULT_UA;
+      }
+      return fetch(url, options);
+    }
+    module2.exports = {
+      DEFAULT_UA,
+      timeoutSignal,
+      combineSignals,
+      fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
+    };
+  }
+});
+
 // src/webteizle/index.js
 var require_webteizle = __commonJS({
   "src/webteizle/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
+    var { fetchWithTimeout } = require_http();
+    var { ProviderError } = require_errors();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -219,7 +311,7 @@ var require_webteizle = __commonJS({
       "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
       "Referer": BASE_URL + "/"
     };
-    function fetchTmdbInfo(tmdbId, mediaType) {
+    function fetchTmdbInfo(tmdbId, mediaType, signal) {
       return __async(this, null, function* () {
         var cleanId = String(tmdbId || "").trim();
         if (cleanId.includes(":")) cleanId = cleanId.split(":")[0];
@@ -227,7 +319,7 @@ var require_webteizle = __commonJS({
         var endpoint = isTV ? "tv" : "movie";
         var isImdb = cleanId.startsWith("tt");
         if (isImdb) {
-          var fRes = yield fetch("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id");
+          var fRes = yield fetchWithTimeout("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", { signal }, 8e3);
           if (fRes.ok) {
             var fData = yield fRes.json();
             var match = isTV ? fData.tv_results && fData.tv_results[0] : fData.movie_results && fData.movie_results[0];
@@ -240,7 +332,7 @@ var require_webteizle = __commonJS({
             }
           }
         }
-        var res = yield fetch("https://api.themoviedb.org/3/" + endpoint + "/" + cleanId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR");
+        var res = yield fetchWithTimeout("https://api.themoviedb.org/3/" + endpoint + "/" + cleanId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", { signal }, 8e3);
         if (!res.ok) return { titleTr: "", titleEn: "", year: "" };
         var d = yield res.json();
         return {
@@ -253,7 +345,7 @@ var require_webteizle = __commonJS({
     function titleToSlug(title) {
       return (title || "").toLowerCase().replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s").replace(/ı/g, "i").replace(/İ/g, "i").replace(/ö/g, "o").replace(/ç/g, "c").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     }
-    function findFilmPage(titleTr, titleEn) {
+    function findFilmPage(titleTr, titleEn, signal) {
       return __async(this, null, function* () {
         var slugTr = titleToSlug(titleTr);
         var slugEn = titleToSlug(titleEn);
@@ -268,7 +360,7 @@ var require_webteizle = __commonJS({
         }
         for (var url of candidates) {
           try {
-            var r = yield fetch(url, { headers: HEADERS });
+            var r = yield fetchWithTimeout(url, { headers: HEADERS, signal }, 8e3);
             if (r.ok) {
               var html = yield r.text();
               if (html.indexOf("data-id") !== -1 && html.indexOf('id="wip"') !== -1) {
@@ -276,24 +368,28 @@ var require_webteizle = __commonJS({
               }
             }
           } catch (e) {
+            if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+              throw e;
+            }
           }
         }
-        return yield searchFallback(titleTr, titleEn);
+        return yield searchFallback(titleTr, titleEn, signal);
       });
     }
-    function searchFallback(titleTr, titleEn) {
+    function searchFallback(titleTr, titleEn, signal) {
       return __async(this, null, function* () {
         var queries = [titleTr, titleEn].filter(Boolean);
         for (var query of queries) {
           try {
-            var r = yield fetch(BASE_URL + "/ajax/arama.asp", {
+            var r = yield fetchWithTimeout(BASE_URL + "/ajax/arama.asp", {
               method: "POST",
               headers: Object.assign({}, HEADERS, {
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "X-Requested-With": "XMLHttpRequest"
               }),
-              body: "q=" + encodeURIComponent(query)
-            });
+              body: "q=" + encodeURIComponent(query),
+              signal
+            }, 8e3);
             if (!r.ok) continue;
             var data = yield r.json();
             if (data.status === "success" && data.results && data.results.filmler && Array.isArray(data.results.filmler.results)) {
@@ -301,7 +397,7 @@ var require_webteizle = __commonJS({
               if (items.length > 0) {
                 var best = items[0];
                 var pageUrl = best.url.startsWith("http") ? best.url : BASE_URL + best.url;
-                var pRes = yield fetch(pageUrl, { headers: HEADERS });
+                var pRes = yield fetchWithTimeout(pageUrl, { headers: HEADERS, signal }, 8e3);
                 if (pRes.ok) {
                   var html = yield pRes.text();
                   return { url: pageUrl, html };
@@ -309,6 +405,9 @@ var require_webteizle = __commonJS({
               }
             }
           } catch (e) {
+            if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+              throw e;
+            }
           }
         }
         return null;
@@ -328,39 +427,44 @@ var require_webteizle = __commonJS({
       }
       return diller;
     }
-    function fetchAlternatifler(filmId, dil, seasonNum, episodeNum) {
+    function fetchAlternatifler(filmId, dil, seasonNum, episodeNum, signal) {
       return __async(this, null, function* () {
         var body = "filmid=" + filmId + "&dil=" + dil + "&s=" + (seasonNum || "") + "&b=" + (episodeNum || "") + "&bot=0";
         try {
-          var r = yield fetch(BASE_URL + "/ajax/dataAlternatif3.asp", {
+          var r = yield fetchWithTimeout(BASE_URL + "/ajax/dataAlternatif3.asp", {
             method: "POST",
             headers: Object.assign({}, HEADERS, {
               "Content-Type": "application/x-www-form-urlencoded",
               "X-Requested-With": "XMLHttpRequest",
               "Origin": BASE_URL
             }),
-            body
-          });
+            body,
+            signal
+          }, 8e3);
           if (!r.ok) return [];
           var data = yield r.json();
           return data.status === "success" && Array.isArray(data.data) ? data.data : [];
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return [];
         }
       });
     }
-    function fetchEmbedIframe(embedId) {
+    function fetchEmbedIframe(embedId, signal) {
       return __async(this, null, function* () {
         try {
-          var r = yield fetch(BASE_URL + "/ajax/dataEmbed.asp", {
+          var r = yield fetchWithTimeout(BASE_URL + "/ajax/dataEmbed.asp", {
             method: "POST",
             headers: Object.assign({}, HEADERS, {
               "Content-Type": "application/x-www-form-urlencoded",
               "X-Requested-With": "XMLHttpRequest",
               "Origin": BASE_URL
             }),
-            body: "id=" + embedId
-          });
+            body: "id=" + embedId,
+            signal
+          }, 8e3);
           if (!r.ok) return null;
           var html = yield r.text();
           var m = html.match(/<iframe[^>]+src="([^"]+)"/i);
@@ -376,35 +480,42 @@ var require_webteizle = __commonJS({
           }
           return null;
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return null;
         }
       });
     }
-    function fetchVidMolyStream(iframeUrl) {
+    function fetchVidMolyStream(iframeUrl, signal) {
       return __async(this, null, function* () {
         var fullUrl = iframeUrl.startsWith("//") ? "https:" + iframeUrl : iframeUrl;
         fullUrl = fullUrl.replace("vidmoly.to", "vidmoly.biz").replace("vidmoly.net", "vidmoly.biz");
         try {
-          var r = yield fetch(fullUrl, {
+          var r = yield fetchWithTimeout(fullUrl, {
             headers: {
               "User-Agent": HEADERS["User-Agent"],
               "Referer": BASE_URL + "/"
-            }
-          });
+            },
+            signal
+          }, 8e3);
           if (!r.ok) return null;
           var html = yield r.text();
           var m = html.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]/i);
           return m ? { url: m[1], type: "hls", referer: "https://vidmoly.biz/" } : null;
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return null;
         }
       });
     }
-    function processEmbed(embedData, dilAd, movieTitle) {
+    function processEmbed(embedData, dilAd, movieTitle, signal) {
       return __async(this, null, function* () {
         var baslik = (embedData.baslik || "").toLowerCase();
         if (baslik === "pixel" || baslik === "netu") return null;
-        var src = yield fetchEmbedIframe(embedData.id);
+        var src = yield fetchEmbedIframe(embedData.id, signal);
         if (!src) return null;
         var flag = dilAd.includes("Dublaj") ? "\u{1F1F9}\u{1F1F7} " : "\u{1F310} ";
         var pName = embedData.baslik || "Kaynak";
@@ -413,7 +524,7 @@ var require_webteizle = __commonJS({
         else if (src.indexOf("filemoon") !== -1) pName = "FileMoon";
         var q = embedData.kalite || "1080p";
         if (src.indexOf("vidmoly") !== -1) {
-          var s = yield fetchVidMolyStream(src);
+          var s = yield fetchVidMolyStream(src, signal);
           if (s) {
             var sHeaders = {
               "User-Agent": HEADERS["User-Agent"],
@@ -436,8 +547,9 @@ var require_webteizle = __commonJS({
         return null;
       });
     }
-    function getStreams(tmdbId, mediaType, season, episode) {
+    function getStreams(tmdbId, mediaType, season, episode, options) {
       return __async(this, null, function* () {
+        const signal = options && options.signal;
         try {
           if (typeof tmdbId === "object" && tmdbId !== null) {
             mediaType = tmdbId.type || mediaType;
@@ -449,19 +561,19 @@ var require_webteizle = __commonJS({
             tmdbId = tmdbId.split(":")[0];
           }
           var isTV = mediaType === "tv" || mediaType === "series";
-          var info = yield fetchTmdbInfo(tmdbId, mediaType);
+          var info = yield fetchTmdbInfo(tmdbId, mediaType, signal);
           var movieName = info.titleTr || info.titleEn;
           if (!movieName) return [];
-          var pageResult = yield findFilmPage(info.titleTr, info.titleEn);
+          var pageResult = yield findFilmPage(info.titleTr, info.titleEn, signal);
           if (!pageResult || !pageResult.html) return [];
           var filmId = parseFilmId(pageResult.html);
           if (!filmId) return [];
           var diller = parseDilList(pageResult.html, pageResult.url);
           var streams = [];
           for (var d of diller) {
-            var embedList = yield fetchAlternatifler(filmId, d.dil, season, episode);
+            var embedList = yield fetchAlternatifler(filmId, d.dil, season, episode, signal);
             for (var e of embedList) {
-              var s = yield processEmbed(e, d.ad, movieName);
+              var s = yield processEmbed(e, d.ad, movieName, signal);
               if (s && !streams.some((x) => x.url === s.url)) {
                 streams.push(s);
               }
@@ -469,6 +581,9 @@ var require_webteizle = __commonJS({
           }
           return streams;
         } catch (err) {
+          if (err && (err.name === "AbortError" || err.message === "TIMEOUT" || err.name === "ProviderError" || signal && signal.aborted)) {
+            throw err;
+          }
           console.error("[Webte\u0130zle] Hata:", err.message);
           return [];
         }
@@ -495,6 +610,7 @@ var require_webteizle = __commonJS({
 // src/shared/adapter.js
 var require_adapter = __commonJS({
   "src/shared/adapter.js"(exports2, module2) {
+    var { combineSignals } = require_http();
     function normalizeStreams(raw) {
       if (!Array.isArray(raw)) throw new Error("INVALID_RESULT");
       var seen = /* @__PURE__ */ Object.create(null), invalid = 0;
@@ -518,11 +634,28 @@ var require_adapter = __commonJS({
     }
     function adapt2(provider2, source, emit, options) {
       if (!provider2 || typeof provider2.getStreams !== "function") throw new Error("MISSING_EXPORT");
-      var limit = options && options.timeoutMs || source.timeoutMs || 12e3;
-      return { getStreams: function(id, type, season, episode) {
+      var defaultLimit = options && options.timeoutMs || source.timeoutMs || 12e3;
+      return { getStreams: function(id, type, season, episode, callOptions) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var activeLimit = callOptions && callOptions.timeoutMs || defaultLimit;
           var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+          var externalSignal = callOptions && callOptions.signal;
+          if (externalSignal && abortCtrl) {
+            if (externalSignal.aborted) {
+              try {
+                abortCtrl.abort(externalSignal.reason);
+              } catch (_) {
+              }
+            } else if (externalSignal.addEventListener) {
+              externalSignal.addEventListener("abort", function() {
+                try {
+                  abortCtrl.abort(externalSignal.reason);
+                } catch (_) {
+                }
+              }, { once: true });
+            }
+          }
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -542,7 +675,11 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
-            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
+            var effectiveSignal = abortCtrl ? abortCtrl.signal : externalSignal;
+            if (externalSignal && abortCtrl && typeof combineSignals === "function") {
+              effectiveSignal = combineSignals([externalSignal, abortCtrl.signal]);
+            }
+            var callOpts = effectiveSignal ? { signal: effectiveSignal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
                 return provider2.getStreams(id, type, season, episode, callOpts);
@@ -557,7 +694,7 @@ var require_adapter = __commonJS({
                     }
                   }
                   reject(new Error("TIMEOUT"));
-                }, limit);
+                }, activeLimit);
               })
             ]);
             var normalized = normalizeStreams(result);
@@ -572,7 +709,7 @@ var require_adapter = __commonJS({
               } catch (_) {
               }
             }
-            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT") || externalSignal && externalSignal.aborted) {
               record.status = "timeout";
             } else if (err && err.name === "ProviderError") {
               if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";

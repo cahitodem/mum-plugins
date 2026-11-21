@@ -1,4 +1,5 @@
 // MUM modification 2026-11-22. GPL-3.0-only; see LICENSE and NOTICE.md.
+const { combineSignals } = require('./http.js');
 
 function normalizeStreams(raw) {
   if (!Array.isArray(raw)) throw new Error('INVALID_RESULT');
@@ -16,10 +17,23 @@ function normalizeStreams(raw) {
 
 function adapt(provider, source, emit, options) {
   if (!provider || typeof provider.getStreams !== 'function') throw new Error('MISSING_EXPORT');
-  var limit = options && options.timeoutMs || source.timeoutMs || 12000;
-  return {getStreams:async function(id,type,season,episode) {
+  var defaultLimit = options && options.timeoutMs || source.timeoutMs || 12000;
+  return {getStreams:async function(id,type,season,episode,callOptions) {
     var started=Date.now(), timer, timedOut=false;
+    var activeLimit = (callOptions && callOptions.timeoutMs) || defaultLimit;
     var abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var externalSignal = callOptions && callOptions.signal;
+
+    if (externalSignal && abortCtrl) {
+      if (externalSignal.aborted) {
+        try { abortCtrl.abort(externalSignal.reason); } catch (_) {}
+      } else if (externalSignal.addEventListener) {
+        externalSignal.addEventListener('abort', function() {
+          try { abortCtrl.abort(externalSignal.reason); } catch (_) {}
+        }, { once: true });
+      }
+    }
+
     var record={provider:source.id,status:'started',count:0,rejected:0,elapsedMs:0,playback:'unverified'};
     function report() { record.elapsedMs=Date.now()-started; try { if(emit) emit(Object.assign({},record)); } catch (_) {} }
     report();
@@ -27,7 +41,13 @@ function adapt(provider, source, emit, options) {
       type = type === 'series' ? 'tv' : type;
       if (source.supportedTypes.indexOf(type)<0) {record.status='unsupported-type';return [];}
       if (id == null || String(id).trim()==='' || (type==='tv' && (!Number.isInteger(season) || season<0 || !Number.isInteger(episode) || episode<1))) {record.status='invalid-input';return [];}
-      var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
+
+      var effectiveSignal = abortCtrl ? abortCtrl.signal : externalSignal;
+      if (externalSignal && abortCtrl && typeof combineSignals === 'function') {
+        effectiveSignal = combineSignals([externalSignal, abortCtrl.signal]);
+      }
+      var callOpts = effectiveSignal ? { signal: effectiveSignal } : {};
+
       var result=await Promise.race([
         Promise.resolve().then(function(){return provider.getStreams(id,type,season,episode,callOpts);}),
         new Promise(function(_,reject){timer=setTimeout(function(){
@@ -36,7 +56,7 @@ function adapt(provider, source, emit, options) {
             try { abortCtrl.abort(new Error('TIMEOUT')); } catch (_) {}
           }
           reject(new Error('TIMEOUT'));
-        },limit);})
+        },activeLimit);})
       ]);
       var normalized=normalizeStreams(result);
       record.count=normalized.streams.length;record.rejected=normalized.invalid;
@@ -46,7 +66,7 @@ function adapt(provider, source, emit, options) {
       if (abortCtrl && !abortCtrl.signal.aborted) {
         try { abortCtrl.abort(); } catch (_) {}
       }
-      if (timedOut || (err && (err.name === 'AbortError' || err.message === 'TIMEOUT'))) {
+      if (timedOut || (err && (err.name === 'AbortError' || err.message === 'TIMEOUT')) || (externalSignal && externalSignal.aborted)) {
         record.status = 'timeout';
       } else if (err && err.name === 'ProviderError') {
         if (err.code === 'HTTP_BLOCKED') record.status = 'http-blocked';

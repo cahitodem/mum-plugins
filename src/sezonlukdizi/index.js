@@ -1,6 +1,8 @@
 // MUM modification 2026-11-21. GPL-3.0-only; see LICENSE and NOTICE.md.
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 var cheerio = require('cheerio-without-node-native');
 
 var _cfgReady = null;
@@ -39,7 +41,7 @@ function normalizeTitle(value) {
     .replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
   try {
     var cleanId = String(id || '').trim();
     if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
@@ -49,7 +51,7 @@ async function resolveTmdbInfo(id, mediaType) {
     var origTitle = '';
 
     if (cleanId.startsWith('tt')) {
-      var findRes = await fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
+      var findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
       if (findRes.ok) {
         var fData = await findRes.json();
         var item = fData.tv_results && fData.tv_results[0];
@@ -64,7 +66,7 @@ async function resolveTmdbInfo(id, mediaType) {
     }
 
     if (numericId && (!title || !origTitle)) {
-      var tRes = await fetch(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`);
+      var tRes = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal: signal }, 8000);
       if (tRes.ok) {
         var tData = await tRes.json();
         title = tData.name || title;
@@ -74,11 +76,12 @@ async function resolveTmdbInfo(id, mediaType) {
 
     return { title: title, origTitle: origTitle, numericId: numericId };
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return { title: '', origTitle: '', numericId: id };
   }
 }
 
-async function searchShow(titleTr, titleEn) {
+async function searchShow(titleTr, titleEn, signal) {
   var candidates = [titleTr, titleEn].map(normalizeTitle).filter(Boolean);
   if (!candidates.length) return null;
 
@@ -87,14 +90,15 @@ async function searchShow(titleTr, titleEn) {
 
   for (var query of [titleTr, titleEn].filter(Boolean)) {
     try {
-      var res = await fetch(BASE_URL + '/ajax/arama.asp', {
+      var res = await fetchWithTimeout(BASE_URL + '/ajax/arama.asp', {
         method: 'POST',
         headers: Object.assign({}, WORKING_HEADERS, {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'X-Requested-With': 'XMLHttpRequest'
         }),
-        body: 'q=' + encodeURIComponent(query)
-      });
+        body: 'q=' + encodeURIComponent(query),
+        signal: signal
+      }, 8000);
       if (!res.ok) continue;
       var data = await res.json();
       if (data.status !== 'success' || !data.results || !data.results.diziler || !Array.isArray(data.results.diziler.results)) {
@@ -134,12 +138,12 @@ async function searchShow(titleTr, titleEn) {
   return bestScore >= 60 ? best : null;
 }
 
-async function findEpisodeBid(slug, did, seasonNum, episodeNum) {
+async function findEpisodeBid(slug, did, seasonNum, episodeNum, signal) {
   var targetHref = `${seasonNum}-sezon-${episodeNum}-bolum.html`;
   var directUrl = `${BASE_URL}/${slug}/${targetHref}`;
 
   try {
-    var res = await fetch(directUrl, { headers: WORKING_HEADERS });
+    var res = await fetchWithTimeout(directUrl, { headers: WORKING_HEADERS, signal: signal }, 8000);
     if (res.ok) {
       var html = await res.text();
       var $ = cheerio.load(html);
@@ -148,19 +152,22 @@ async function findEpisodeBid(slug, did, seasonNum, episodeNum) {
         return { bid: String(bid).trim(), episodeUrl: directUrl };
       }
     }
-  } catch (_) {}
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
+  }
 
   if (did) {
     try {
-      var bRes = await fetch(BASE_URL + '/ajax/dataIzleBolumler.asp', {
+      var bRes = await fetchWithTimeout(BASE_URL + '/ajax/dataIzleBolumler.asp', {
         method: 'POST',
         headers: Object.assign({}, WORKING_HEADERS, {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'X-Requested-With': 'XMLHttpRequest',
           'Referer': directUrl
         }),
-        body: `did=${encodeURIComponent(did)}&sno=${encodeURIComponent(seasonNum)}`
-      });
+        body: `did=${encodeURIComponent(did)}&sno=${encodeURIComponent(seasonNum)}`,
+        signal: signal
+      }, 8000);
       if (bRes.ok) {
         var bHtml = await bRes.text();
         var $b = cheerio.load(bHtml);
@@ -180,42 +187,47 @@ async function findEpisodeBid(slug, did, seasonNum, episodeNum) {
           return { bid: String(foundBid).trim(), episodeUrl: directUrl };
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
+    }
   }
 
   return null;
 }
 
-async function fetchAlternatifler(bid, dil, episodeUrl) {
+async function fetchAlternatifler(bid, dil, episodeUrl, signal) {
   try {
-    var res = await fetch(BASE_URL + '/ajax/dataAlternatif22.asp', {
+    var res = await fetchWithTimeout(BASE_URL + '/ajax/dataAlternatif22.asp', {
       method: 'POST',
       headers: Object.assign({}, WORKING_HEADERS, {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'X-Requested-With': 'XMLHttpRequest',
         'Referer': episodeUrl
       }),
-      body: `bid=${encodeURIComponent(bid)}&dil=${encodeURIComponent(dil)}`
-    });
+      body: `bid=${encodeURIComponent(bid)}&dil=${encodeURIComponent(dil)}`,
+      signal: signal
+    }, 8000);
     if (!res.ok) return [];
     var data = await res.json();
     return (data.status === 'success' && Array.isArray(data.data)) ? data.data : [];
-  } catch (_) {
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return [];
   }
 }
 
-async function fetchEmbedIframe(embedId, episodeUrl) {
+async function fetchEmbedIframe(embedId, episodeUrl, signal) {
   try {
-    var res = await fetch(BASE_URL + '/ajax/dataEmbed22.asp', {
+    var res = await fetchWithTimeout(BASE_URL + '/ajax/dataEmbed22.asp', {
       method: 'POST',
       headers: Object.assign({}, WORKING_HEADERS, {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'X-Requested-With': 'XMLHttpRequest',
         'Referer': episodeUrl
       }),
-      body: `id=${encodeURIComponent(embedId)}`
-    });
+      body: `id=${encodeURIComponent(embedId)}`,
+      signal: signal
+    }, 8000);
     if (!res.ok) return null;
     var html = await res.text();
     if (html.indexOf('reCAPTCHADATA.asp') !== -1) return null;
@@ -227,38 +239,42 @@ async function fetchEmbedIframe(embedId, episodeUrl) {
       return src;
     }
     return null;
-  } catch (_) {
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return null;
   }
 }
 
-async function fetchVidMolyStream(iframeUrl) {
+async function fetchVidMolyStream(iframeUrl, signal) {
   var fullUrl = iframeUrl.startsWith('//') ? 'https:' + iframeUrl : iframeUrl;
   fullUrl = fullUrl.replace('vidmoly.to', 'vidmoly.biz').replace('vidmoly.net', 'vidmoly.biz');
   try {
-    var r = await fetch(fullUrl, {
+    var r = await fetchWithTimeout(fullUrl, {
       headers: {
         'User-Agent': WORKING_HEADERS['User-Agent'],
         'Referer': BASE_URL + '/'
-      }
-    });
+      },
+      signal: signal
+    }, 8000);
     if (!r.ok) return null;
     var html = await r.text();
     var m = html.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]/i);
     return m ? { url: m[1], type: 'hls', referer: 'https://vidmoly.biz/' } : null;
-  } catch (_) {
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return null;
   }
 }
 
-async function fetchSibnetStream(iframeUrl) {
+async function fetchSibnetStream(iframeUrl, signal) {
   try {
-    var r = await fetch(iframeUrl, {
+    var r = await fetchWithTimeout(iframeUrl, {
       headers: {
         'User-Agent': WORKING_HEADERS['User-Agent'],
         'Referer': 'https://video.sibnet.ru/'
-      }
-    });
+      },
+      signal: signal
+    }, 8000);
     if (!r.ok) return null;
     var html = await r.text();
     var m = html.match(/src\s*:\s*["'](\/v\/[^"']+\.mp4)["']/i);
@@ -266,7 +282,8 @@ async function fetchSibnetStream(iframeUrl) {
       return { url: 'https://video.sibnet.ru' + m[1], type: 'mp4', referer: 'https://video.sibnet.ru/' };
     }
     return null;
-  } catch (_) {
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return null;
   }
 }
@@ -383,18 +400,19 @@ function parseMasterVariants(masterContent, masterUrl) {
   return variants;
 }
 
-async function fetchByseStream(iframeUrl) {
+async function fetchByseStream(iframeUrl, signal) {
   try {
     var m = iframeUrl.match(/\/e\/([a-zA-Z0-9]+)/i);
     if (!m) return null;
     var code = m[1];
     var origin = new URL(iframeUrl).origin;
-    var apiRes = await fetch(`${origin}/api/videos/${code}`, {
+    var apiRes = await fetchWithTimeout(`${origin}/api/videos/${code}`, {
       headers: {
         'User-Agent': WORKING_HEADERS['User-Agent'],
         'Referer': iframeUrl
-      }
-    });
+      },
+      signal: signal
+    }, 8000);
     if (!apiRes.ok) return null;
     var data = await apiRes.json();
     if (!data || !data.playback) return null;
@@ -409,12 +427,13 @@ async function fetchByseStream(iframeUrl) {
       if (!masterUrl) continue;
 
       try {
-        var mRes = await fetch(masterUrl, {
+        var mRes = await fetchWithTimeout(masterUrl, {
           headers: {
             'User-Agent': WORKING_HEADERS['User-Agent'],
             'Referer': origin + '/'
-          }
-        });
+          },
+          signal: signal
+        }, 8000);
         if (mRes.ok) {
           var mText = await mRes.text();
           var variants = parseMasterVariants(mText, masterUrl);
@@ -432,7 +451,9 @@ async function fetchByseStream(iframeUrl) {
             }
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
+      }
 
       // Fallback: If no direct child variants extracted, provide masterUrl
       if (results.length === 0 && !seenUrls[masterUrl]) {
@@ -447,13 +468,22 @@ async function fetchByseStream(iframeUrl) {
     }
 
     return results.length > 0 ? results : null;
-  } catch (_) {
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return null;
   }
 }
 
-async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
   try {
+    var signal = options && options.signal;
+    if (typeof tmdbId === 'object' && tmdbId !== null) {
+      mediaType = tmdbId.type || mediaType;
+      seasonNum = tmdbId.season || seasonNum;
+      episodeNum = tmdbId.episode || episodeNum;
+      if (tmdbId.signal && !signal) signal = tmdbId.signal;
+      tmdbId = tmdbId.id;
+    }
     if (mediaType !== 'tv' && mediaType !== 'series') return [];
     if (!Number.isInteger(Number(seasonNum)) || Number(seasonNum) < 0 || !Number.isInteger(Number(episodeNum)) || Number(episodeNum) < 1) {
       return [];
@@ -461,15 +491,15 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     seasonNum = Number(seasonNum);
     episodeNum = Number(episodeNum);
 
-    var info = await resolveTmdbInfo(tmdbId, mediaType);
+    var info = await resolveTmdbInfo(tmdbId, mediaType, signal);
     var titleTr = (info.title || '').trim();
     var titleEn = (info.origTitle || '').trim();
     var displayTitle = titleTr || titleEn || 'Dizi';
 
-    var show = await searchShow(titleTr, titleEn);
+    var show = await searchShow(titleTr, titleEn, signal);
     if (!show || !show.slug) return [];
 
-    var epInfo = await findEpisodeBid(show.slug, show.did, seasonNum, episodeNum);
+    var epInfo = await findEpisodeBid(show.slug, show.did, seasonNum, episodeNum, signal);
     if (!epInfo || !epInfo.bid) return [];
 
     var dilConfigs = [
@@ -480,7 +510,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     // Parallel fetch both Subtitle and Dubbed alternatives
     var altsByDil = await Promise.all(
       dilConfigs.map(async function (dConf) {
-        var alts = await fetchAlternatifler(epInfo.bid, dConf.code, epInfo.episodeUrl);
+        var alts = await fetchAlternatifler(epInfo.bid, dConf.code, epInfo.episodeUrl, signal);
         return { dConf: dConf, alts: alts };
       })
     );
@@ -516,7 +546,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           var altTitle = (alt.baslik || '').trim();
           var quality = alt.kalite ? `${alt.kalite === 4 ? '1080p' : alt.kalite === 3 ? '720p' : '480p'}` : '1080p';
 
-          var iframeSrc = await fetchEmbedIframe(alt.id, epInfo.episodeUrl);
+          var iframeSrc = await fetchEmbedIframe(alt.id, epInfo.episodeUrl, signal);
           if (!iframeSrc) return null;
 
           var resolvedStream = null;
@@ -524,13 +554,13 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
           if (iframeSrc.indexOf('vidmoly') !== -1) {
             pName = 'VidMoly';
-            resolvedStream = await fetchVidMolyStream(iframeSrc);
+            resolvedStream = await fetchVidMolyStream(iframeSrc, signal);
           } else if (iframeSrc.indexOf('sibnet') !== -1) {
             pName = 'Sibnet';
-            resolvedStream = await fetchSibnetStream(iframeSrc);
+            resolvedStream = await fetchSibnetStream(iframeSrc, signal);
           } else if (iframeSrc.indexOf('bysejikuar') !== -1 || iframeSrc.indexOf('filemoon') !== -1) {
             pName = 'FileMoon';
-            resolvedStream = await fetchByseStream(iframeSrc);
+            resolvedStream = await fetchByseStream(iframeSrc, signal);
           } else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(iframeSrc)) {
             var isHls = /\.m3u8(?:[?#]|$)/i.test(iframeSrc);
             resolvedStream = {
@@ -549,7 +579,8 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               quality: st.quality || quality
             };
           });
-        } catch (_) {
+        } catch (errInner) {
+          if (errInner && (errInner.name === 'AbortError' || errInner.message === 'TIMEOUT' || errInner.name === 'ProviderError')) throw errInner;
           return null;
         }
       })
@@ -594,7 +625,10 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
 
     return allStreams;
-  } catch (_) {
+  } catch (err) {
+    if (err && (err.name === 'ProviderError' || err.name === 'AbortError' || err.message === 'TIMEOUT')) {
+      throw err;
+    }
     return [];
   }
 }

@@ -1,5 +1,7 @@
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { sortStreamsByQuality } = require("../shared/quality.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -38,24 +40,15 @@ var HEADERS = {
   'Referer': BASE_URL + '/'
 };
 
-// ── Güvenli Zaman Aşımı Sinyali (QuickJS & Tarayıcı Uyumlu) ──────────────
-function timeoutSignal(ms) {
-  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    return AbortSignal.timeout(ms);
-  }
-  var controller = new AbortController();
-  setTimeout(function() { controller.abort(); }, ms);
-  return controller.signal;
-}
-
 // ── Bağlantı Sıfırlanma (ECONNRESET) Dirençli Güvenli İstek Motoru ────────
 async function safeFetch(url, options, maxRetries) {
   var retries = typeof maxRetries === 'number' ? maxRetries : 1;
   for (var i = 0; i <= retries; i++) {
     try {
-      var res = await fetch(url, options);
+      var res = await fetchWithTimeout(url, options, 8000);
       if (res.ok || i === retries) return res;
     } catch (e) {
+      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
       if (i === retries) throw e;
       await new Promise(function(r) { setTimeout(r, 200); });
     }
@@ -95,7 +88,7 @@ function titleToSlug(str) {
 }
 
 // ── TMDB & IMDb Metadata Çözümleme ───────────────────────────────────────
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
   try {
     var cleanId = String(id || '').trim();
     // Prefix temizliği (movie:603 -> 603, tv:1396 -> 1396, tmdb:603 -> 603, imdb:tt... -> tt...)
@@ -111,7 +104,7 @@ async function resolveTmdbInfo(id, mediaType) {
 
     if (cleanId.startsWith('tt')) {
       var findUrl = 'https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id';
-      var findRes = await fetch(findUrl, { signal: timeoutSignal(7000) });
+      var findRes = await fetchWithTimeout(findUrl, { signal: signal }, 8000);
       if (findRes.ok) {
         var fData = await findRes.json();
         var item = isTv ? (fData.tv_results && fData.tv_results[0]) : (fData.movie_results && fData.movie_results[0]);
@@ -130,7 +123,7 @@ async function resolveTmdbInfo(id, mediaType) {
     if (numericId && (!title || !origTitle)) {
       var tType = isTv ? 'tv' : 'movie';
       var tUrl = 'https://api.themoviedb.org/3/' + tType + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR';
-      var tRes = await fetch(tUrl, { signal: timeoutSignal(7000) });
+      var tRes = await fetchWithTimeout(tUrl, { signal: signal }, 8000);
       if (tRes.ok) {
         var tData = await tRes.json();
         title = tData.name || tData.title || title;
@@ -147,12 +140,13 @@ async function resolveTmdbInfo(id, mediaType) {
       numericId: numericId || id
     };
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return { titleTr: '', titleEn: '', year: '', numericId: id };
   }
 }
 
 // ── Canlı JSON Arama (Live Search) ────────────────────────────────────────
-async function liveSearch(query) {
+async function liveSearch(query, signal) {
   if (!query || !query.trim()) return { movies: [], series: [] };
   try {
     var searchUrl = BASE_URL + '/ara/oneri?q=' + encodeURIComponent(query.trim());
@@ -162,9 +156,9 @@ async function liveSearch(query) {
         'Accept': 'application/json, text/plain, */*',
         'Referer': BASE_URL + '/'
       },
-      signal: timeoutSignal(6000)
+      signal: signal
     };
-    var res = await fetch(searchUrl, sOpts);
+    var res = await fetchWithTimeout(searchUrl, sOpts, 8000);
     if (!res.ok) return { movies: [], series: [] };
     var data = await res.json();
     return {
@@ -172,16 +166,17 @@ async function liveSearch(query) {
       series: Array.isArray(data.series) ? data.series : []
     };
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return { movies: [], series: [] };
   }
 }
 
 // ── Sayfa Tabanlı Arama Yedekleme (HTML Fallback) ──────────────────────────
-async function htmlSearch(query) {
+async function htmlSearch(query, signal) {
   if (!query || !query.trim()) return [];
   try {
     var url = BASE_URL + '/ara?q=' + encodeURIComponent(query.trim());
-    var res = await fetch(url, { headers: HEADERS, signal: timeoutSignal(7000) });
+    var res = await fetchWithTimeout(url, { headers: HEADERS, signal: signal }, 8000);
     if (!res.ok) return [];
     var html = await res.text();
     if (!cheerio) return [];
@@ -208,12 +203,13 @@ async function htmlSearch(query) {
 
     return results;
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return [];
   }
 }
 
 // ── Medya Adayını Bulma ve Eşleştirme Motoru ──────────────────────────────
-async function findMediaUrl(tmdbInfo, isTv) {
+async function findMediaUrl(tmdbInfo, isTv, signal) {
   var candidates = [];
   var queries = [];
 
@@ -222,7 +218,7 @@ async function findMediaUrl(tmdbInfo, isTv) {
 
   for (var i = 0; i < queries.length; i++) {
     var q = queries[i];
-    var lData = await liveSearch(q);
+    var lData = await liveSearch(q, signal);
     var list = isTv ? lData.series : lData.movies;
     if (list && list.length > 0) {
       list.forEach(function(item) {
@@ -238,7 +234,7 @@ async function findMediaUrl(tmdbInfo, isTv) {
   // Canlı arama sonuç vermediyse HTML aramasını dene
   if (candidates.length === 0) {
     for (var j = 0; j < queries.length; j++) {
-      var hList = await htmlSearch(queries[j]);
+      var hList = await htmlSearch(queries[j], signal);
       var filtered = hList.filter(function(item) {
         return isTv ? (item.type === 'series' || item.type === 'anime') : (item.type === 'movie');
       });
@@ -314,9 +310,9 @@ async function findMediaUrl(tmdbInfo, isTv) {
 }
 
 // ── Pilavyer Oynatıcı ve Akış Çözücü ──────────────────────────────────────
-async function extractStreamsFromPlayer(pageUrl) {
+async function extractStreamsFromPlayer(pageUrl, signal) {
   try {
-    var pageRes = await safeFetch(pageUrl, { headers: HEADERS, signal: timeoutSignal(8000) });
+    var pageRes = await safeFetch(pageUrl, { headers: HEADERS, signal: signal });
     if (!pageRes || !pageRes.ok) return [];
     var pHtml = await pageRes.text();
     if (!pHtml) return [];
@@ -335,7 +331,7 @@ async function extractStreamsFromPlayer(pageUrl) {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Referer': BASE_URL + '/'
       },
-      signal: timeoutSignal(8000)
+      signal: signal
     });
     if (!pRes || !pRes.ok) return [];
     var pDataHtml = await pRes.text();
@@ -458,12 +454,14 @@ async function extractStreamsFromPlayer(pageUrl) {
 }
 
 // ── Ana getStreams Fonksiyonu ─────────────────────────────────────────────
-async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
   try {
+    var signal = options && options.signal;
     if (typeof tmdbId === 'object' && tmdbId !== null) {
       mediaType = tmdbId.type || mediaType;
       seasonNum = tmdbId.season || seasonNum;
       episodeNum = tmdbId.episode || episodeNum;
+      if (tmdbId.signal && !signal) signal = tmdbId.signal;
       tmdbId = tmdbId.id;
     }
 
@@ -516,8 +514,8 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       contentUrl = BASE_URL + '/dizi/' + sSlug + '/sezon-' + sNum + '/bolum-' + eNum;
     } else {
       // TMDB / IMDb ID çözümleme ve arama
-      var tmdbInfo = await resolveTmdbInfo(cleanId, isTv ? 'tv' : 'movie');
-      var mediaMatch = await findMediaUrl(tmdbInfo, isTv);
+      var tmdbInfo = await resolveTmdbInfo(cleanId, isTv ? 'tv' : 'movie', signal);
+      var mediaMatch = await findMediaUrl(tmdbInfo, isTv, signal);
       if (!mediaMatch || !mediaMatch.url) return [];
 
       var matchSlug = (mediaMatch.url.split('/').pop() || '').trim();
@@ -532,9 +530,12 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
     if (!contentUrl) return [];
 
-    var streams = await extractStreamsFromPlayer(contentUrl);
+    var streams = await extractStreamsFromPlayer(contentUrl, signal);
     return streams;
   } catch (e) {
+    if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+      throw e;
+    }
     return [];
   }
 }

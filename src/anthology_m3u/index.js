@@ -156,6 +156,9 @@ async function resolveTmdbMovie(rawId, signal) {
         if (isImdb && !data.imdb_id) data.imdb_id = cleanId;
         return data;
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return null;
     }
 }
@@ -177,6 +180,9 @@ async function resolveTmdbShow(rawId, signal) {
         if (!data || (!data.name && !data.original_name)) return null;
         return data;
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return null;
     }
 }
@@ -194,6 +200,9 @@ async function fetchM3U(url, signal) {
         cacheTime[url] = now;
         return text;
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return null;
     }
 }
@@ -354,6 +363,9 @@ async function searchFilmStreams(tmdbId, opts) {
 
         return results.sort((a, b) => b.score - a.score);
     } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw e;
+        }
         return [];
     }
 }
@@ -472,6 +484,9 @@ async function searchDiziStreams(rawId, seasonInput, episodeInput, opts) {
 
         return results;
     } catch (err) {
+        if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT' || err.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw err;
+        }
         return [];
     }
 }

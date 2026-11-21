@@ -235,7 +235,7 @@ function ultraClean(str) {
 
 // ==================== TMDB BİLGİ ÇÖZÜMLEME ====================
 
-async function resolveTmdbInfo(id) {
+async function resolveTmdbInfo(id, signal) {
   try {
     var cleanId = String(id || '').trim();
     if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
@@ -249,7 +249,7 @@ async function resolveTmdbInfo(id) {
     if (cleanId.startsWith('tt')) {
       imdbId = cleanId;
       var findUrl = 'https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id&language=tr-TR';
-      var findRes = await fetchWithTimeout(findUrl, {}, 8000);
+      var findRes = await fetchWithTimeout(findUrl, { signal: signal }, 8000);
       if (findRes.ok) {
         var fd = await findRes.json();
         var match = fd.movie_results && fd.movie_results[0];
@@ -263,7 +263,7 @@ async function resolveTmdbInfo(id) {
     } else if (/^\d+$/.test(cleanId)) {
       tmdbId = cleanId;
       var movieUrl = 'https://api.themoviedb.org/3/movie/' + cleanId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR';
-      var mRes = await fetchWithTimeout(movieUrl, {}, 8000);
+      var mRes = await fetchWithTimeout(movieUrl, { signal: signal }, 8000);
       if (mRes.ok) {
         var md = await mRes.json();
         titleTr = md.title || '';
@@ -281,13 +281,14 @@ async function resolveTmdbInfo(id) {
       tmdbId: tmdbId
     };
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return { titleTr: '', titleEn: '', year: '', imdbId: '', tmdbId: '' };
   }
 }
 
 // ==================== FİLM EŞLEŞTİRME (SLUG BULUCU) ====================
 
-async function findMovieSlug(tmdbIdOrSlug) {
+async function findMovieSlug(tmdbIdOrSlug, signal) {
   var cleanId = String(tmdbIdOrSlug || '').trim();
   if (cleanId.startsWith('hdfilmcehennemi:movie:')) {
     return cleanId.replace('hdfilmcehennemi:movie:', '').trim();
@@ -304,7 +305,7 @@ async function findMovieSlug(tmdbIdOrSlug) {
   if (SLUG_CACHE.has(cleanId)) return SLUG_CACHE.get(cleanId);
 
   // 3. TMDB Metadata Çözümleme
-  var info = await resolveTmdbInfo(cleanId);
+  var info = await resolveTmdbInfo(cleanId, signal);
   if (info.imdbId && FILM_MAP[info.imdbId]) {
     SLUG_CACHE.set(cleanId, FILM_MAP[info.imdbId]);
     return FILM_MAP[info.imdbId];
@@ -356,7 +357,7 @@ async function findMovieSlug(tmdbIdOrSlug) {
     var cand = candidates[i];
     if (!cand) continue;
     try {
-      var res = await fetchWithTimeout(BASE_URL + '/' + cand + '/', { headers: HEADERS }, 5000);
+      var res = await fetchWithTimeout(BASE_URL + '/' + cand + '/', { headers: HEADERS, signal: signal }, 5000);
       if (isAccessBlocked(res)) {
         throw new ProviderError('HTTP_BLOCKED', 'HDFilmCehennemi 403 Forbidden', 'search', 403);
       }
@@ -381,7 +382,11 @@ async function findMovieSlug(tmdbIdOrSlug) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+        throw e;
+      }
+    }
   }
 
   return null;
@@ -423,9 +428,9 @@ function decryptCloseLoadScript(scriptContent, embedHost, targetVar) {
   }
 }
 
-async function resolveCloseLoadStreams(pageUrl) {
+async function resolveCloseLoadStreams(pageUrl, signal) {
   try {
-    var res = await fetchWithTimeout(pageUrl, { headers: HEADERS }, 10000);
+    var res = await fetchWithTimeout(pageUrl, { headers: HEADERS, signal: signal }, 8000);
     if (!res.ok) return null;
     var html = await res.text();
 
@@ -445,8 +450,9 @@ async function resolveCloseLoadStreams(pageUrl) {
         headers: {
           'User-Agent': embedUa,
           'Referer': BASE_URL + '/'
-        }
-      }, 10000);
+        },
+        signal: signal
+      }, 8000);
       if (!eRes.ok) continue;
       eHtml = await eRes.text();
 
@@ -554,21 +560,23 @@ async function resolveCloseLoadStreams(pageUrl) {
 
 // ==================== STREAMS API ====================
 
-async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
   try {
+    var signal = options && options.signal;
     var rawId = tmdbIdOrArgs;
     if (typeof tmdbIdOrArgs === 'object' && tmdbIdOrArgs !== null) {
       rawId = tmdbIdOrArgs.id || '';
       mediaType = mediaType || tmdbIdOrArgs.type || tmdbIdOrArgs.mediaType;
+      if (tmdbIdOrArgs.signal && !signal) signal = tmdbIdOrArgs.signal;
     }
 
     if (!rawId) return [];
 
-    var slug = await findMovieSlug(rawId);
+    var slug = await findMovieSlug(rawId, signal);
     if (!slug) return [];
 
     var pageUrl = BASE_URL + '/' + slug + '/';
-    var resolved = await resolveCloseLoadStreams(pageUrl);
+    var resolved = await resolveCloseLoadStreams(pageUrl, signal);
     if (!resolved || !resolved.streamUrl) return [];
 
     var masterUrl = resolved.streamUrl;

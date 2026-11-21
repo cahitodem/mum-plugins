@@ -21,7 +21,8 @@ function cfgReady() {
  */
 
 var cheerio = require('cheerio-without-node-native');
-const { timeoutSignal } = require("../shared/http.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 const PROVIDER_NAME = 'SinemaCX';
 var BASE_URL = 'https://sinemacc.com';
@@ -40,7 +41,7 @@ function decodeBase64Safe(str) {
   return str;
 }
 
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
   try {
     let cleanId = String(id || '').trim();
     if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
@@ -52,7 +53,7 @@ async function resolveTmdbInfo(id, mediaType) {
     let year = '';
 
     if (cleanId.startsWith('tt')) {
-      const findRes = await fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
+      const findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
       if (findRes.ok) {
         const fData = await findRes.json();
         const item = (mediaType === 'tv' || mediaType === 'series')
@@ -71,7 +72,7 @@ async function resolveTmdbInfo(id, mediaType) {
 
     if (numericId && (!title || !origTitle || !imdbId)) {
       const type = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
-      const tRes = await fetch(`https://api.themoviedb.org/3/${type}/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`);
+      const tRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${type}/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: signal }, 8000);
       if (tRes.ok) {
         const tData = await tRes.json();
         title = tData.name || tData.title || title;
@@ -83,17 +84,18 @@ async function resolveTmdbInfo(id, mediaType) {
 
     return { title, origTitle, year, numericId, imdbId };
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return { title: '', origTitle: '', year: '', numericId: id, imdbId: '' };
   }
 }
 
-async function searchOnSite(query, year) {
+async function searchOnSite(query, year, signal) {
   if (!query || query.length < 2) return null;
   const cleanQuery = query.toLowerCase().trim();
   const searchUrl = `${BASE_URL}/?s=` + encodeURIComponent(cleanQuery);
 
   try {
-    const res = await fetch(searchUrl, { headers: WORKING_HEADERS });
+    const res = await fetchWithTimeout(searchUrl, { headers: WORKING_HEADERS, signal: signal }, 8000);
     if (!res.ok) return null;
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -148,9 +150,18 @@ async function searchOnSite(query, year) {
   }
 }
 
-async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
   try {
-    const info = await resolveTmdbInfo(tmdbId, mediaType);
+    var signal = options && options.signal;
+    if (typeof tmdbId === 'object' && tmdbId !== null) {
+      mediaType = tmdbId.type || mediaType;
+      seasonNum = tmdbId.season || seasonNum;
+      episodeNum = tmdbId.episode || episodeNum;
+      if (tmdbId.signal && !signal) signal = tmdbId.signal;
+      tmdbId = tmdbId.id;
+    }
+
+    const info = await resolveTmdbInfo(tmdbId, mediaType, signal);
     const trTitle = (info.title || '').trim();
     const orgTitle = (info.origTitle || '').trim();
     const displayTitle = trTitle || orgTitle || 'Film';
@@ -170,7 +181,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
 
     for (const cand of searchCandidates) {
-      result = await searchOnSite(cand, releaseYear);
+      result = await searchOnSite(cand, releaseYear, signal);
       if (result && result.score >= 10) break;
     }
 
@@ -184,7 +195,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
     if (result && result.url) {
       try {
-        const pageRes = await fetch(result.url, { headers: WORKING_HEADERS, signal: timeoutSignal(5000) });
+        const pageRes = await fetchWithTimeout(result.url, { headers: WORKING_HEADERS, signal: signal }, 8000);
         if (pageRes.ok) {
           const html = await pageRes.text();
           const $page = cheerio.load(html);
@@ -216,7 +227,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             params.append('hash', videoId);
             params.append('r', result.url);
 
-            const r = await fetch(apiURL, {
+            const r = await fetchWithTimeout(apiURL, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -225,8 +236,8 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 'User-Agent': WORKING_HEADERS['User-Agent']
               },
               body: params.toString(),
-              signal: timeoutSignal(4000)
-            });
+              signal: signal
+            }, 8000);
 
             if (r.ok) {
               const json = await r.json();
@@ -249,20 +260,22 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             }
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
+      }
     }
 
     // Fallback: Vixolity 1080p HLS mirror when player.filmizle.in is unreachable
     if (info.imdbId) {
       const vixUrl = `https://ha.vixolity.com/vs/${info.imdbId}`;
-      const vRes = await fetch(vixUrl, {
+      const vRes = await fetchWithTimeout(vixUrl, {
         headers: {
           'User-Agent': WORKING_HEADERS['User-Agent'],
           'Referer': 'https://ha.vixolity.com/',
           'Origin': 'https://ha.vixolity.com'
         },
-        signal: timeoutSignal(6000)
-      });
+        signal: signal
+      }, 8000);
       if (vRes.ok) {
         const vTxt = await vRes.text();
         if (vTxt && vTxt.includes('#EXTM3U')) {
@@ -297,6 +310,9 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
     return [];
   } catch (err) {
+    if (err && (err.name === 'ProviderError' || err.name === 'AbortError' || err.message === 'TIMEOUT')) {
+      throw err;
+    }
     return [];
   }
 }

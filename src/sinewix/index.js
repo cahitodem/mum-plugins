@@ -196,7 +196,7 @@ async function searchAndFetch(title, originalTitle, targetImdb, mediaType, seaso
     }
 }
 
-async function resolveTmdbInfo(rawId, mediaType) {
+async function resolveTmdbInfo(rawId, mediaType, signal) {
     var TMDB_KEY = '4ef0d7355d9ffb5151e987764708ce96';
     var cleanId = String(rawId).replace(/^tmdb:/, '').split(':')[0].trim();
     var isImdb = cleanId.startsWith('tt');
@@ -204,7 +204,7 @@ async function resolveTmdbInfo(rawId, mediaType) {
 
     try {
         if (isImdb) {
-            var r = await fetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_KEY + '&external_source=imdb_id', { signal: timeoutSignal(8000) });
+            var r = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_KEY + '&external_source=imdb_id', { signal: signal }, 8000);
             var d = await r.json();
             var item = isTV ? (d.tv_results && d.tv_results[0]) : (d.movie_results && d.movie_results[0]);
             if (!item) return null;
@@ -219,12 +219,15 @@ async function resolveTmdbInfo(rawId, mediaType) {
         }
 
         var tmdbType = isTV ? 'tv' : 'movie';
-        var res = await fetch('https://api.themoviedb.org/3/' + tmdbType + '/' + cleanId + '?api_key=' + TMDB_KEY + '&language=tr-TR&append_to_response=external_ids', { signal: timeoutSignal(8000) });
+        var res = await fetchWithTimeout('https://api.themoviedb.org/3/' + tmdbType + '/' + cleanId + '?api_key=' + TMDB_KEY + '&language=tr-TR&append_to_response=external_ids', { signal: signal }, 8000);
         var data = await res.json();
         if (!data || (!data.title && !data.name)) return null;
         data.tmdb_id = data.id;
         return data;
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+            throw e;
+        }
         return null;
     }
 }
@@ -406,7 +409,7 @@ async function getStreams(id, mediaType, seasonNum, episodeNum, options) {
             return [];
         }
 
-        var data = await resolveTmdbInfo(id, mediaType);
+        var data = await resolveTmdbInfo(id, mediaType, signal);
         if (!data) {
             throw new ProviderError('TMDB_ERROR', 'SineWix TMDB bilgisi çözülemedi', 'tmdb');
         }
@@ -418,7 +421,7 @@ async function getStreams(id, mediaType, seasonNum, episodeNum, options) {
         var streams = await searchAndFetch(data.title || data.name, ot, targetImdb, mediaType, seasonNum || 1, episodeNum || 1, year, targetTmdbId, signal);
         return streams || [];
     } catch (e) {
-        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
             throw e;
         }
         return [];

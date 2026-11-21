@@ -194,11 +194,103 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/http.js
+var require_http = __commonJS({
+  "src/shared/http.js"(exports2, module2) {
+    var DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    function timeoutSignal(ms) {
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        return AbortSignal.timeout(ms);
+      }
+      var controller = new AbortController();
+      setTimeout(function() {
+        controller.abort(new Error("TIMEOUT"));
+      }, ms);
+      return controller.signal;
+    }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
+    function fetchWithTimeout(url, options, ms) {
+      ms = ms || 8e3;
+      options = options || {};
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
+      }
+      if (!options.headers) {
+        options.headers = {};
+      }
+      if (!options.headers["User-Agent"] && !options.headers["user-agent"]) {
+        options.headers["User-Agent"] = DEFAULT_UA;
+      }
+      return fetch(url, options);
+    }
+    module2.exports = {
+      DEFAULT_UA,
+      timeoutSignal,
+      combineSignals,
+      fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
+    };
+  }
+});
+
 // src/sezonlukdizi/index.js
 var require_sezonlukdizi = __commonJS({
   "src/sezonlukdizi/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
+    var { fetchWithTimeout } = require_http();
+    var { ProviderError } = require_errors();
     var cheerio = require("cheerio-without-node-native");
     var _cfgReady = null;
     function cfgReady() {
@@ -223,7 +315,7 @@ var require_sezonlukdizi = __commonJS({
     function normalizeTitle(value) {
       return String(value || "").toLowerCase().replace(/[ıİ]/g, "i").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[^a-z0-9]+/g, " ").trim();
     }
-    function resolveTmdbInfo(id, mediaType) {
+    function resolveTmdbInfo(id, mediaType, signal) {
       return __async(this, null, function* () {
         try {
           var cleanId = String(id || "").trim();
@@ -232,7 +324,7 @@ var require_sezonlukdizi = __commonJS({
           var title = "";
           var origTitle = "";
           if (cleanId.startsWith("tt")) {
-            var findRes = yield fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
+            var findRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal }, 8e3);
             if (findRes.ok) {
               var fData = yield findRes.json();
               var item = fData.tv_results && fData.tv_results[0];
@@ -246,7 +338,7 @@ var require_sezonlukdizi = __commonJS({
             numericId = cleanId;
           }
           if (numericId && (!title || !origTitle)) {
-            var tRes = yield fetch(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`);
+            var tRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal }, 8e3);
             if (tRes.ok) {
               var tData = yield tRes.json();
               title = tData.name || title;
@@ -255,11 +347,12 @@ var require_sezonlukdizi = __commonJS({
           }
           return { title, origTitle, numericId };
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
           return { title: "", origTitle: "", numericId: id };
         }
       });
     }
-    function searchShow(titleTr, titleEn) {
+    function searchShow(titleTr, titleEn, signal) {
       return __async(this, null, function* () {
         var candidates = [titleTr, titleEn].map(normalizeTitle).filter(Boolean);
         if (!candidates.length) return null;
@@ -267,14 +360,15 @@ var require_sezonlukdizi = __commonJS({
         var bestScore = 0;
         for (var query of [titleTr, titleEn].filter(Boolean)) {
           try {
-            var res = yield fetch(BASE_URL + "/ajax/arama.asp", {
+            var res = yield fetchWithTimeout(BASE_URL + "/ajax/arama.asp", {
               method: "POST",
               headers: Object.assign({}, WORKING_HEADERS, {
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "X-Requested-With": "XMLHttpRequest"
               }),
-              body: "q=" + encodeURIComponent(query)
-            });
+              body: "q=" + encodeURIComponent(query),
+              signal
+            }, 8e3);
             if (!res.ok) continue;
             var data = yield res.json();
             if (data.status !== "success" || !data.results || !data.results.diziler || !Array.isArray(data.results.diziler.results)) {
@@ -311,12 +405,12 @@ var require_sezonlukdizi = __commonJS({
         return bestScore >= 60 ? best : null;
       });
     }
-    function findEpisodeBid(slug, did, seasonNum, episodeNum) {
+    function findEpisodeBid(slug, did, seasonNum, episodeNum, signal) {
       return __async(this, null, function* () {
         var targetHref = `${seasonNum}-sezon-${episodeNum}-bolum.html`;
         var directUrl = `${BASE_URL}/${slug}/${targetHref}`;
         try {
-          var res = yield fetch(directUrl, { headers: WORKING_HEADERS });
+          var res = yield fetchWithTimeout(directUrl, { headers: WORKING_HEADERS, signal }, 8e3);
           if (res.ok) {
             var html = yield res.text();
             var $ = cheerio.load(html);
@@ -325,19 +419,21 @@ var require_sezonlukdizi = __commonJS({
               return { bid: String(bid).trim(), episodeUrl: directUrl };
             }
           }
-        } catch (_) {
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
         }
         if (did) {
           try {
-            var bRes = yield fetch(BASE_URL + "/ajax/dataIzleBolumler.asp", {
+            var bRes = yield fetchWithTimeout(BASE_URL + "/ajax/dataIzleBolumler.asp", {
               method: "POST",
               headers: Object.assign({}, WORKING_HEADERS, {
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "X-Requested-With": "XMLHttpRequest",
                 "Referer": directUrl
               }),
-              body: `did=${encodeURIComponent(did)}&sno=${encodeURIComponent(seasonNum)}`
-            });
+              body: `did=${encodeURIComponent(did)}&sno=${encodeURIComponent(seasonNum)}`,
+              signal
+            }, 8e3);
             if (bRes.ok) {
               var bHtml = yield bRes.text();
               var $b = cheerio.load(bHtml);
@@ -357,44 +453,48 @@ var require_sezonlukdizi = __commonJS({
                 return { bid: String(foundBid).trim(), episodeUrl: directUrl };
               }
             }
-          } catch (_) {
+          } catch (e) {
+            if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
           }
         }
         return null;
       });
     }
-    function fetchAlternatifler(bid, dil, episodeUrl) {
+    function fetchAlternatifler(bid, dil, episodeUrl, signal) {
       return __async(this, null, function* () {
         try {
-          var res = yield fetch(BASE_URL + "/ajax/dataAlternatif22.asp", {
+          var res = yield fetchWithTimeout(BASE_URL + "/ajax/dataAlternatif22.asp", {
             method: "POST",
             headers: Object.assign({}, WORKING_HEADERS, {
               "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
               "X-Requested-With": "XMLHttpRequest",
               "Referer": episodeUrl
             }),
-            body: `bid=${encodeURIComponent(bid)}&dil=${encodeURIComponent(dil)}`
-          });
+            body: `bid=${encodeURIComponent(bid)}&dil=${encodeURIComponent(dil)}`,
+            signal
+          }, 8e3);
           if (!res.ok) return [];
           var data = yield res.json();
           return data.status === "success" && Array.isArray(data.data) ? data.data : [];
-        } catch (_) {
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
           return [];
         }
       });
     }
-    function fetchEmbedIframe(embedId, episodeUrl) {
+    function fetchEmbedIframe(embedId, episodeUrl, signal) {
       return __async(this, null, function* () {
         try {
-          var res = yield fetch(BASE_URL + "/ajax/dataEmbed22.asp", {
+          var res = yield fetchWithTimeout(BASE_URL + "/ajax/dataEmbed22.asp", {
             method: "POST",
             headers: Object.assign({}, WORKING_HEADERS, {
               "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
               "X-Requested-With": "XMLHttpRequest",
               "Referer": episodeUrl
             }),
-            body: `id=${encodeURIComponent(embedId)}`
-          });
+            body: `id=${encodeURIComponent(embedId)}`,
+            signal
+          }, 8e3);
           if (!res.ok) return null;
           var html = yield res.text();
           if (html.indexOf("reCAPTCHADATA.asp") !== -1) return null;
@@ -405,40 +505,44 @@ var require_sezonlukdizi = __commonJS({
             return src;
           }
           return null;
-        } catch (_) {
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
           return null;
         }
       });
     }
-    function fetchVidMolyStream(iframeUrl) {
+    function fetchVidMolyStream(iframeUrl, signal) {
       return __async(this, null, function* () {
         var fullUrl = iframeUrl.startsWith("//") ? "https:" + iframeUrl : iframeUrl;
         fullUrl = fullUrl.replace("vidmoly.to", "vidmoly.biz").replace("vidmoly.net", "vidmoly.biz");
         try {
-          var r = yield fetch(fullUrl, {
+          var r = yield fetchWithTimeout(fullUrl, {
             headers: {
               "User-Agent": WORKING_HEADERS["User-Agent"],
               "Referer": BASE_URL + "/"
-            }
-          });
+            },
+            signal
+          }, 8e3);
           if (!r.ok) return null;
           var html = yield r.text();
           var m = html.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]/i);
           return m ? { url: m[1], type: "hls", referer: "https://vidmoly.biz/" } : null;
-        } catch (_) {
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
           return null;
         }
       });
     }
-    function fetchSibnetStream(iframeUrl) {
+    function fetchSibnetStream(iframeUrl, signal) {
       return __async(this, null, function* () {
         try {
-          var r = yield fetch(iframeUrl, {
+          var r = yield fetchWithTimeout(iframeUrl, {
             headers: {
               "User-Agent": WORKING_HEADERS["User-Agent"],
               "Referer": "https://video.sibnet.ru/"
-            }
-          });
+            },
+            signal
+          }, 8e3);
           if (!r.ok) return null;
           var html = yield r.text();
           var m = html.match(/src\s*:\s*["'](\/v\/[^"']+\.mp4)["']/i);
@@ -446,7 +550,8 @@ var require_sezonlukdizi = __commonJS({
             return { url: "https://video.sibnet.ru" + m[1], type: "mp4", referer: "https://video.sibnet.ru/" };
           }
           return null;
-        } catch (_) {
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
           return null;
         }
       });
@@ -562,19 +667,20 @@ var require_sezonlukdizi = __commonJS({
       }
       return variants;
     }
-    function fetchByseStream(iframeUrl) {
+    function fetchByseStream(iframeUrl, signal) {
       return __async(this, null, function* () {
         try {
           var m = iframeUrl.match(/\/e\/([a-zA-Z0-9]+)/i);
           if (!m) return null;
           var code = m[1];
           var origin = new URL(iframeUrl).origin;
-          var apiRes = yield fetch(`${origin}/api/videos/${code}`, {
+          var apiRes = yield fetchWithTimeout(`${origin}/api/videos/${code}`, {
             headers: {
               "User-Agent": WORKING_HEADERS["User-Agent"],
               "Referer": iframeUrl
-            }
-          });
+            },
+            signal
+          }, 8e3);
           if (!apiRes.ok) return null;
           var data = yield apiRes.json();
           if (!data || !data.playback) return null;
@@ -586,12 +692,13 @@ var require_sezonlukdizi = __commonJS({
             var masterUrl = src.url;
             if (!masterUrl) continue;
             try {
-              var mRes = yield fetch(masterUrl, {
+              var mRes = yield fetchWithTimeout(masterUrl, {
                 headers: {
                   "User-Agent": WORKING_HEADERS["User-Agent"],
                   "Referer": origin + "/"
-                }
-              });
+                },
+                signal
+              }, 8e3);
               if (mRes.ok) {
                 var mText = yield mRes.text();
                 var variants = parseMasterVariants(mText, masterUrl);
@@ -609,7 +716,8 @@ var require_sezonlukdizi = __commonJS({
                   }
                 }
               }
-            } catch (_) {
+            } catch (e) {
+              if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
             }
             if (results.length === 0 && !seenUrls[masterUrl]) {
               seenUrls[masterUrl] = true;
@@ -622,27 +730,36 @@ var require_sezonlukdizi = __commonJS({
             }
           }
           return results.length > 0 ? results : null;
-        } catch (_) {
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
           return null;
         }
       });
     }
-    function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
       return __async(this, null, function* () {
         try {
+          var signal = options && options.signal;
+          if (typeof tmdbId === "object" && tmdbId !== null) {
+            mediaType = tmdbId.type || mediaType;
+            seasonNum = tmdbId.season || seasonNum;
+            episodeNum = tmdbId.episode || episodeNum;
+            if (tmdbId.signal && !signal) signal = tmdbId.signal;
+            tmdbId = tmdbId.id;
+          }
           if (mediaType !== "tv" && mediaType !== "series") return [];
           if (!Number.isInteger(Number(seasonNum)) || Number(seasonNum) < 0 || !Number.isInteger(Number(episodeNum)) || Number(episodeNum) < 1) {
             return [];
           }
           seasonNum = Number(seasonNum);
           episodeNum = Number(episodeNum);
-          var info = yield resolveTmdbInfo(tmdbId, mediaType);
+          var info = yield resolveTmdbInfo(tmdbId, mediaType, signal);
           var titleTr = (info.title || "").trim();
           var titleEn = (info.origTitle || "").trim();
           var displayTitle = titleTr || titleEn || "Dizi";
-          var show = yield searchShow(titleTr, titleEn);
+          var show = yield searchShow(titleTr, titleEn, signal);
           if (!show || !show.slug) return [];
-          var epInfo = yield findEpisodeBid(show.slug, show.did, seasonNum, episodeNum);
+          var epInfo = yield findEpisodeBid(show.slug, show.did, seasonNum, episodeNum, signal);
           if (!epInfo || !epInfo.bid) return [];
           var dilConfigs = [
             { code: "1", label: "Altyaz\u0131l\u0131", flag: "\u{1F310} " },
@@ -651,7 +768,7 @@ var require_sezonlukdizi = __commonJS({
           var altsByDil = yield Promise.all(
             dilConfigs.map(function(dConf2) {
               return __async(this, null, function* () {
-                var alts2 = yield fetchAlternatifler(epInfo.bid, dConf2.code, epInfo.episodeUrl);
+                var alts2 = yield fetchAlternatifler(epInfo.bid, dConf2.code, epInfo.episodeUrl, signal);
                 return { dConf: dConf2, alts: alts2 };
               });
             })
@@ -681,19 +798,19 @@ var require_sezonlukdizi = __commonJS({
                   var dConf2 = task.dConf;
                   var altTitle = (alt2.baslik || "").trim();
                   var quality = alt2.kalite ? `${alt2.kalite === 4 ? "1080p" : alt2.kalite === 3 ? "720p" : "480p"}` : "1080p";
-                  var iframeSrc = yield fetchEmbedIframe(alt2.id, epInfo.episodeUrl);
+                  var iframeSrc = yield fetchEmbedIframe(alt2.id, epInfo.episodeUrl, signal);
                   if (!iframeSrc) return null;
                   var resolvedStream = null;
                   var pName = altTitle || "Kaynak";
                   if (iframeSrc.indexOf("vidmoly") !== -1) {
                     pName = "VidMoly";
-                    resolvedStream = yield fetchVidMolyStream(iframeSrc);
+                    resolvedStream = yield fetchVidMolyStream(iframeSrc, signal);
                   } else if (iframeSrc.indexOf("sibnet") !== -1) {
                     pName = "Sibnet";
-                    resolvedStream = yield fetchSibnetStream(iframeSrc);
+                    resolvedStream = yield fetchSibnetStream(iframeSrc, signal);
                   } else if (iframeSrc.indexOf("bysejikuar") !== -1 || iframeSrc.indexOf("filemoon") !== -1) {
                     pName = "FileMoon";
-                    resolvedStream = yield fetchByseStream(iframeSrc);
+                    resolvedStream = yield fetchByseStream(iframeSrc, signal);
                   } else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(iframeSrc)) {
                     var isHls = /\.m3u8(?:[?#]|$)/i.test(iframeSrc);
                     resolvedStream = {
@@ -713,7 +830,8 @@ var require_sezonlukdizi = __commonJS({
                       quality: st.quality || quality
                     };
                   });
-                } catch (_) {
+                } catch (errInner) {
+                  if (errInner && (errInner.name === "AbortError" || errInner.message === "TIMEOUT" || errInner.name === "ProviderError")) throw errInner;
                   return null;
                 }
               });
@@ -753,7 +871,10 @@ var require_sezonlukdizi = __commonJS({
             });
           }
           return allStreams;
-        } catch (_) {
+        } catch (err) {
+          if (err && (err.name === "ProviderError" || err.name === "AbortError" || err.message === "TIMEOUT")) {
+            throw err;
+          }
           return [];
         }
       });
@@ -780,6 +901,7 @@ var require_sezonlukdizi = __commonJS({
 // src/shared/adapter.js
 var require_adapter = __commonJS({
   "src/shared/adapter.js"(exports2, module2) {
+    var { combineSignals } = require_http();
     function normalizeStreams(raw) {
       if (!Array.isArray(raw)) throw new Error("INVALID_RESULT");
       var seen = /* @__PURE__ */ Object.create(null), invalid = 0;
@@ -803,11 +925,28 @@ var require_adapter = __commonJS({
     }
     function adapt2(provider2, source, emit, options) {
       if (!provider2 || typeof provider2.getStreams !== "function") throw new Error("MISSING_EXPORT");
-      var limit = options && options.timeoutMs || source.timeoutMs || 12e3;
-      return { getStreams: function(id, type, season, episode) {
+      var defaultLimit = options && options.timeoutMs || source.timeoutMs || 12e3;
+      return { getStreams: function(id, type, season, episode, callOptions) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var activeLimit = callOptions && callOptions.timeoutMs || defaultLimit;
           var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+          var externalSignal = callOptions && callOptions.signal;
+          if (externalSignal && abortCtrl) {
+            if (externalSignal.aborted) {
+              try {
+                abortCtrl.abort(externalSignal.reason);
+              } catch (_) {
+              }
+            } else if (externalSignal.addEventListener) {
+              externalSignal.addEventListener("abort", function() {
+                try {
+                  abortCtrl.abort(externalSignal.reason);
+                } catch (_) {
+                }
+              }, { once: true });
+            }
+          }
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -827,7 +966,11 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
-            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
+            var effectiveSignal = abortCtrl ? abortCtrl.signal : externalSignal;
+            if (externalSignal && abortCtrl && typeof combineSignals === "function") {
+              effectiveSignal = combineSignals([externalSignal, abortCtrl.signal]);
+            }
+            var callOpts = effectiveSignal ? { signal: effectiveSignal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
                 return provider2.getStreams(id, type, season, episode, callOpts);
@@ -842,7 +985,7 @@ var require_adapter = __commonJS({
                     }
                   }
                   reject(new Error("TIMEOUT"));
-                }, limit);
+                }, activeLimit);
               })
             ]);
             var normalized = normalizeStreams(result);
@@ -857,7 +1000,7 @@ var require_adapter = __commonJS({
               } catch (_) {
               }
             }
-            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT") || externalSignal && externalSignal.aborted) {
               record.status = "timeout";
             } else if (err && err.name === "ProviderError") {
               if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";

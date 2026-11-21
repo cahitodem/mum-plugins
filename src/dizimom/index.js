@@ -1,5 +1,7 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -29,7 +31,7 @@ var HEADERS = {
   'Referer': 'https://ddizimom.net/'
 };
 
-async function resolveTmdbInfo(id, mediaType) {
+async function resolveTmdbInfo(id, mediaType, signal) {
   try {
     let cleanId = String(id || '').trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, '');
     if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
@@ -39,7 +41,7 @@ async function resolveTmdbInfo(id, mediaType) {
     let origTitle = '';
 
     if (cleanId.startsWith('tt')) {
-      const findRes = await fetch(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
+      const findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
       if (findRes.ok) {
         const fData = await findRes.json();
         const item = (mediaType === 'tv' || mediaType === 'series')
@@ -57,7 +59,7 @@ async function resolveTmdbInfo(id, mediaType) {
 
     if (numericId && (!title || !origTitle)) {
       const type = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
-      const tRes = await fetch(`https://api.themoviedb.org/3/${type}/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`);
+      const tRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${type}/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal: signal }, 8000);
       if (tRes.ok) {
         const tData = await tRes.json();
         title = tData.name || tData.title || title;
@@ -67,6 +69,7 @@ async function resolveTmdbInfo(id, mediaType) {
 
     return { title, origTitle, numericId };
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
     return { title: '', origTitle: '', numericId: id };
   }
 }
@@ -79,21 +82,22 @@ function normalizeTitle(str) {
     .replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-async function resolvePilavyerStream(epUrl, titlePrefix) {
+async function resolvePilavyerStream(epUrl, titlePrefix, signal) {
   try {
-    var epRes = await fetch(epUrl, { headers: HEADERS });
+    var epRes = await fetchWithTimeout(epUrl, { headers: HEADERS, signal: signal }, 8000);
     if (!epRes.ok) return [];
     var epHtml = await epRes.text();
     var pvMatch = epHtml.match(/data-pv=["']([^"']+)["']/i);
     if (!pvMatch) return [];
     var pv = pvMatch[1];
     var sPhpUrl = 'https://pilavyerplay.top/assets/js/s.php?s=' + encodeURIComponent(pv);
-    var pRes = await fetch(sPhpUrl, {
+    var pRes = await fetchWithTimeout(sPhpUrl, {
       headers: {
         'User-Agent': HEADERS['User-Agent'],
         'Referer': 'https://ddizimom.net/'
-      }
-    });
+      },
+      signal: signal
+    }, 8000);
     if (!pRes.ok) return [];
     var pHtml = await pRes.text();
     var playerMatch = pHtml.match(/window\.__PLAYER__\s*=\s*(\{[\s\S]*?\});/);
@@ -147,12 +151,14 @@ async function resolvePilavyerStream(epUrl, titlePrefix) {
   }
 }
 
-async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
   try {
+    var signal = options && options.signal;
     if (typeof tmdbId === 'object' && tmdbId !== null) {
       mediaType = tmdbId.type || mediaType;
       seasonNum = tmdbId.season || seasonNum;
       episodeNum = tmdbId.episode || episodeNum;
+      if (tmdbId.signal && !signal) signal = tmdbId.signal;
       tmdbId = tmdbId.id;
     }
     if (typeof tmdbId === 'string' && tmdbId.indexOf(':') !== -1 && !tmdbId.startsWith('dizimom:')) {
@@ -172,18 +178,18 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (typeof tmdbId === 'string' && tmdbId.startsWith('dizimom:ep:')) {
       var epSlug = tmdbId.replace('dizimom:ep:', '').replace(/^\//, '');
       var targetEpUrl = epSlug.startsWith('http') ? epSlug : (`${BASE_URL}/` + (epSlug.startsWith('dizi/') || epSlug.startsWith('film/') ? '' : 'dizi/') + epSlug);
-      return await resolvePilavyerStream(targetEpUrl);
+      return await resolvePilavyerStream(targetEpUrl, '', signal);
     }
     if (typeof tmdbId === 'string' && tmdbId.startsWith('dizimom:show:')) {
       var showSlug = tmdbId.replace('dizimom:show:', '').replace(/^\//, '');
       var sNum = parseInt(seasonNum) || 1;
       var eNum = parseInt(episodeNum) || 1;
       var directEpUrl = `${BASE_URL}/dizi/${showSlug}/sezon-${sNum}/bolum-${eNum}`;
-      var directRes = await resolvePilavyerStream(directEpUrl);
+      var directRes = await resolvePilavyerStream(directEpUrl, '', signal);
       if (directRes && directRes.length > 0) return directRes;
     }
 
-    var info = await resolveTmdbInfo(tmdbId, mediaType);
+    var info = await resolveTmdbInfo(tmdbId, mediaType, signal);
     var queries = [info.title, info.origTitle].filter(Boolean);
     if (queries.length === 0) return [];
 
@@ -193,7 +199,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
     for (var q of queries) {
       var searchUrl = `${BASE_URL}/ara?q=${encodeURIComponent(q)}`;
-      var sRes = await fetch(searchUrl, { headers: HEADERS });
+      var sRes = await fetchWithTimeout(searchUrl, { headers: HEADERS, signal: signal }, 8000);
       if (!sRes.ok) continue;
       var sHtml = await sRes.text();
       var $ = cheerio.load(sHtml);
@@ -223,7 +229,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
 
         var label = item.title.replace(/^Dizi\s+HD\s+(\d+\.\d+\s+)?/i, '').replace(/^Film\s+HD\s+(\d+\.\d+\s+)?/i, '').trim();
-        var streams = await resolvePilavyerStream(targetPageUrl, label);
+        var streams = await resolvePilavyerStream(targetPageUrl, label, signal);
         if (streams && streams.length > 0) {
           return streams;
         }
@@ -231,6 +237,9 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
     return [];
   } catch (err) {
+    if (err && (err.name === 'ProviderError' || err.name === 'AbortError' || err.message === 'TIMEOUT')) {
+      throw err;
+    }
     return [];
   }
 }

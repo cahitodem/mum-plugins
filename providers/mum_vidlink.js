@@ -213,11 +213,103 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/http.js
+var require_http = __commonJS({
+  "src/shared/http.js"(exports2, module2) {
+    var DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    function timeoutSignal(ms) {
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        return AbortSignal.timeout(ms);
+      }
+      var controller = new AbortController();
+      setTimeout(function() {
+        controller.abort(new Error("TIMEOUT"));
+      }, ms);
+      return controller.signal;
+    }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
+    function fetchWithTimeout(url, options, ms) {
+      ms = ms || 8e3;
+      options = options || {};
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
+      }
+      if (!options.headers) {
+        options.headers = {};
+      }
+      if (!options.headers["User-Agent"] && !options.headers["user-agent"]) {
+        options.headers["User-Agent"] = DEFAULT_UA;
+      }
+      return fetch(url, options);
+    }
+    module2.exports = {
+      DEFAULT_UA,
+      timeoutSignal,
+      combineSignals,
+      fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
+    };
+  }
+});
+
 // src/vidlink/index.js
 var require_vidlink = __commonJS({
   "src/vidlink/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
+    var { fetchWithTimeout } = require_http();
+    var { ProviderError } = require_errors();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -258,15 +350,19 @@ var require_vidlink = __commonJS({
         "Accept-Encoding": "gzip, deflate",
         "Connection": "keep-alive"
       }, options.headers);
-      return fetch(url, __spreadValues({
+      return fetchWithTimeout(url, __spreadValues({
         method: options.method || "GET",
-        headers: defaultHeaders
-      }, options)).then((response) => {
+        headers: defaultHeaders,
+        signal: options.signal
+      }, options), 8e3).then((response) => {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
         return response;
       }).catch((error) => {
+        if (error && (error.name === "AbortError" || error.message === "TIMEOUT" || error.name === "ProviderError")) {
+          throw error;
+        }
         console.error(`[Vidlink] Request failed for ${url}: ${error.message}`);
         throw error;
       });
@@ -317,9 +413,9 @@ var require_vidlink = __commonJS({
       if (height >= 360) return "360p";
       return "240p";
     }
-    function fetchAndParseM3U8(playlistUrl, mediaInfo) {
+    function fetchAndParseM3U8(playlistUrl, mediaInfo, signal) {
       console.log(`[Vidlink] Fetching M3U8 playlist: ${playlistUrl.substring(0, 80)}...`);
-      return makeRequest(playlistUrl, { headers: VIDLINK_HEADERS }).then((response) => response.text()).then((m3u8Content) => {
+      return makeRequest(playlistUrl, { headers: VIDLINK_HEADERS, signal }).then((response) => response.text()).then((m3u8Content) => {
         console.log(`[Vidlink] Parsing M3U8 content`);
         const parsedStreams = parseM3U8(m3u8Content, playlistUrl);
         if (parsedStreams.length === 0) {
@@ -359,6 +455,9 @@ var require_vidlink = __commonJS({
         });
         return streams;
       }).catch((error) => {
+        if (error && (error.name === "AbortError" || error.message === "TIMEOUT" || error.name === "ProviderError" || signal && signal.aborted)) {
+          throw error;
+        }
         console.error(`[Vidlink] Error fetching/parsing M3U8: ${error.message}`);
         return [{
           name: "Vidlink - Auto",
@@ -376,7 +475,7 @@ var require_vidlink = __commonJS({
         }];
       });
     }
-    function getTmdbInfo(tmdbId, mediaType) {
+    function getTmdbInfo(tmdbId, mediaType, signal) {
       const cleanId = String(tmdbId).replace(/^tmdb:/, "").split(":")[0].trim();
       const isImdb = cleanId.startsWith("tt");
       const isTV = mediaType === "tv" || mediaType === "series";
@@ -386,43 +485,69 @@ var require_vidlink = __commonJS({
       } else {
         url = `https://api.themoviedb.org/3/${isTV ? "tv" : "movie"}/${cleanId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
       }
-      return makeRequest(url).then((response) => response.json()).then((raw) => {
+      return makeRequest(url, { signal }).then((response) => response.json()).then((raw) => {
         var _a, _b;
         let data = raw;
         if (isImdb) {
           data = isTV ? raw.tv_results && raw.tv_results[0] : raw.movie_results && raw.movie_results[0];
         }
         if (!data) {
-          throw new Error("Could not find media on TMDB");
+          throw new ProviderError("NO_MATCH", "Could not find media on TMDB", "tmdb");
         }
         const title = isTV ? data.name : data.title;
         const year = isTV ? (_a = data.first_air_date) == null ? void 0 : _a.substring(0, 4) : (_b = data.release_date) == null ? void 0 : _b.substring(0, 4);
         const imdbId = isImdb ? cleanId : data.imdb_id || data.external_ids && data.external_ids.imdb_id || "";
         if (!title) {
-          throw new Error("Could not extract title from TMDB response");
+          throw new ProviderError("PARSE_ERROR", "Could not extract title from TMDB response", "tmdb");
         }
         console.log(`[Vidlink] TMDB Info: "${title}" (${year}), Numeric ID: ${data.id}`);
         return { id: data.id, imdbId, title, year, data };
       });
     }
-    function encryptTmdbId(tmdbId) {
+    function encryptTmdbId(tmdbId, signal) {
       console.log(`[Vidlink] Encrypting TMDB ID: ${tmdbId}`);
       function attempt(n) {
-        return makeRequest(`${ENC_DEC_API}/enc-vidlink?text=${tmdbId}`).then((response) => response.json()).then((data) => {
+        if (signal && signal.aborted) {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          return Promise.reject(err);
+        }
+        return makeRequest(`${ENC_DEC_API}/enc-vidlink?text=${tmdbId}`, { signal }).then((response) => response.json()).then((data) => {
           if (data && data.result) {
             console.log(`[Vidlink] Successfully encrypted TMDB ID (attempt ${n})`);
             return data.result;
           }
           throw new Error("Invalid encryption response format");
         }).catch((error) => {
+          if (error && (error.name === "AbortError" || error.message === "TIMEOUT" || error.name === "ProviderError" || signal && signal.aborted)) {
+            throw error;
+          }
           console.error(`[Vidlink] Encryption attempt ${n} failed: ${error.message}`);
           if (n < 4) {
-            return new Promise((resolve) => setTimeout(resolve, 1500 * n)).then(() => attempt(n + 1));
+            return new Promise((resolve, reject) => {
+              if (signal && signal.aborted) {
+                const err = new Error("The operation was aborted");
+                err.name = "AbortError";
+                return reject(err);
+              }
+              const timer = setTimeout(resolve, 1500 * n);
+              if (signal && signal.addEventListener) {
+                signal.addEventListener("abort", () => {
+                  clearTimeout(timer);
+                  const err = new Error("The operation was aborted");
+                  err.name = "AbortError";
+                  reject(err);
+                }, { once: true });
+              }
+            }).then(() => attempt(n + 1));
           }
           throw error;
         });
       }
       return attempt(1).catch((error) => {
+        if (error && (error.name === "AbortError" || error.message === "TIMEOUT" || error.name === "ProviderError" || signal && signal.aborted)) {
+          throw error;
+        }
         console.error(`[Vidlink] Encryption failed after retries: ${error.message}`);
         throw error;
       });
@@ -555,18 +680,19 @@ var require_vidlink = __commonJS({
       }
       return streams;
     }
-    function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = null) {
+    function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = null, options = {}) {
+      const signal = options && options.signal;
       console.log(`[Vidlink] Fetching streams for TMDB ID: ${tmdbId}`);
-      return getTmdbInfo(tmdbId, mediaType).then((tmdbInfo) => {
+      return getTmdbInfo(tmdbId, mediaType, signal).then((tmdbInfo) => {
         const { title, year, id: numericId } = tmdbInfo;
-        return encryptTmdbId(numericId).then((encryptedId) => {
+        return encryptTmdbId(numericId, signal).then((encryptedId) => {
           let vidlinkUrl;
           if (mediaType === "tv" && seasonNum && episodeNum) {
             vidlinkUrl = `${VIDLINK_API}/tv/${encryptedId}/${seasonNum}/${episodeNum}`;
           } else {
             vidlinkUrl = `${VIDLINK_API}/movie/${encryptedId}`;
           }
-          return makeRequest(vidlinkUrl, { headers: VIDLINK_HEADERS }).then((response) => response.json()).then((data) => {
+          return makeRequest(vidlinkUrl, { headers: VIDLINK_HEADERS, signal }).then((response) => response.json()).then((data) => {
             const mediaInfo = { title, year, mediaType, season: seasonNum, episode: episodeNum };
             const streams = processVidlinkResponse(data, mediaInfo);
             if (streams.length === 0) return [];
@@ -574,7 +700,7 @@ var require_vidlink = __commonJS({
             const directStreams = streams.filter((s) => !s._isPlaylist);
             if (playlistStreams.length > 0) {
               const playlistPromises = playlistStreams.map(
-                (ps) => fetchAndParseM3U8(ps.url, ps.mediaInfo)
+                (ps) => fetchAndParseM3U8(ps.url, ps.mediaInfo, signal)
               );
               return Promise.all(playlistPromises).then((parsedStreamArrays) => {
                 const allStreams = directStreams.concat(...parsedStreamArrays);
@@ -588,6 +714,9 @@ var require_vidlink = __commonJS({
               return directStreams;
             }
           }).catch((err) => {
+            if (err && (err.name === "AbortError" || err.message === "TIMEOUT" || err.name === "ProviderError" || signal && signal.aborted)) {
+              throw err;
+            }
             if (tmdbInfo.imdbId) {
               const isTV = mediaType === "tv" || mediaType === "series";
               const vixUrl = isTV && seasonNum && episodeNum ? `https://ha.vixolity.com/vs/${tmdbInfo.imdbId}/s${seasonNum}/e${episodeNum}` : `https://ha.vixolity.com/vs/${tmdbInfo.imdbId}`;
@@ -596,7 +725,7 @@ var require_vidlink = __commonJS({
                 "Referer": "https://ha.vixolity.com/",
                 "Origin": "https://ha.vixolity.com"
               };
-              return fetch(vixUrl, { headers: vixHeaders }).then((r) => {
+              return fetchWithTimeout(vixUrl, { headers: vixHeaders, signal }, 8e3).then((r) => {
                 if (!r.ok) return [];
                 return r.text().then((txt) => {
                   if (!txt || !txt.includes("#EXTM3U")) return [];
@@ -615,12 +744,20 @@ var require_vidlink = __commonJS({
                     provider: "vidlink"
                   }];
                 });
-              }).catch(() => []);
+              }).catch((e) => {
+                if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+                  throw e;
+                }
+                return [];
+              });
             }
             throw err;
           });
         });
       }).catch((error) => {
+        if (error && (error.name === "AbortError" || error.message === "TIMEOUT" || error.name === "ProviderError" || signal && signal.aborted)) {
+          throw error;
+        }
         console.error(`[Vidlink] Error in getStreams: ${error.message}`);
         return [];
       });
@@ -646,6 +783,7 @@ var require_vidlink = __commonJS({
 // src/shared/adapter.js
 var require_adapter = __commonJS({
   "src/shared/adapter.js"(exports2, module2) {
+    var { combineSignals } = require_http();
     function normalizeStreams(raw) {
       if (!Array.isArray(raw)) throw new Error("INVALID_RESULT");
       var seen = /* @__PURE__ */ Object.create(null), invalid = 0;
@@ -669,11 +807,28 @@ var require_adapter = __commonJS({
     }
     function adapt2(provider2, source, emit, options) {
       if (!provider2 || typeof provider2.getStreams !== "function") throw new Error("MISSING_EXPORT");
-      var limit = options && options.timeoutMs || source.timeoutMs || 12e3;
-      return { getStreams: function(id, type, season, episode) {
+      var defaultLimit = options && options.timeoutMs || source.timeoutMs || 12e3;
+      return { getStreams: function(id, type, season, episode, callOptions) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var activeLimit = callOptions && callOptions.timeoutMs || defaultLimit;
           var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+          var externalSignal = callOptions && callOptions.signal;
+          if (externalSignal && abortCtrl) {
+            if (externalSignal.aborted) {
+              try {
+                abortCtrl.abort(externalSignal.reason);
+              } catch (_) {
+              }
+            } else if (externalSignal.addEventListener) {
+              externalSignal.addEventListener("abort", function() {
+                try {
+                  abortCtrl.abort(externalSignal.reason);
+                } catch (_) {
+                }
+              }, { once: true });
+            }
+          }
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -693,7 +848,11 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
-            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
+            var effectiveSignal = abortCtrl ? abortCtrl.signal : externalSignal;
+            if (externalSignal && abortCtrl && typeof combineSignals === "function") {
+              effectiveSignal = combineSignals([externalSignal, abortCtrl.signal]);
+            }
+            var callOpts = effectiveSignal ? { signal: effectiveSignal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
                 return provider2.getStreams(id, type, season, episode, callOpts);
@@ -708,7 +867,7 @@ var require_adapter = __commonJS({
                     }
                   }
                   reject(new Error("TIMEOUT"));
-                }, limit);
+                }, activeLimit);
               })
             ]);
             var normalized = normalizeStreams(result);
@@ -723,7 +882,7 @@ var require_adapter = __commonJS({
               } catch (_) {
               }
             }
-            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT") || externalSignal && externalSignal.aborted) {
               record.status = "timeout";
             } else if (err && err.name === "ProviderError") {
               if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";

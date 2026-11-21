@@ -1,5 +1,7 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -49,11 +51,12 @@ function makeRequest(url, options = {}) {
         ...options.headers
     };
 
-    return fetch(url, {
+    return fetchWithTimeout(url, {
         method: options.method || 'GET',
         headers: defaultHeaders,
+        signal: options.signal,
         ...options
-    })
+    }, 8000)
     .then(response => {
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -61,6 +64,9 @@ function makeRequest(url, options = {}) {
         return response;
     })
     .catch(error => {
+        if (error && (error.name === 'AbortError' || error.message === 'TIMEOUT' || error.name === 'ProviderError')) {
+            throw error;
+        }
         console.error(`[Vidlink] Request failed for ${url}: ${error.message}`);
         throw error;
     });
@@ -127,10 +133,10 @@ function getQualityFromResolution(resolution) {
 }
 
 // Fetch and parse M3U8 playlist to extract quality variants
-function fetchAndParseM3U8(playlistUrl, mediaInfo) {
+function fetchAndParseM3U8(playlistUrl, mediaInfo, signal) {
     console.log(`[Vidlink] Fetching M3U8 playlist: ${playlistUrl.substring(0, 80)}...`);
     
-    return makeRequest(playlistUrl, { headers: VIDLINK_HEADERS })
+    return makeRequest(playlistUrl, { headers: VIDLINK_HEADERS, signal })
         .then(response => response.text())
         .then(m3u8Content => {
             console.log(`[Vidlink] Parsing M3U8 content`);
@@ -177,6 +183,9 @@ function fetchAndParseM3U8(playlistUrl, mediaInfo) {
             return streams;
         })
         .catch(error => {
+            if (error && (error.name === 'AbortError' || error.message === 'TIMEOUT' || error.name === 'ProviderError' || (signal && signal.aborted))) {
+                throw error;
+            }
             console.error(`[Vidlink] Error fetching/parsing M3U8: ${error.message}`);
             // Fallback: return the master playlist URL
             return [{
@@ -196,7 +205,7 @@ function fetchAndParseM3U8(playlistUrl, mediaInfo) {
 }
 
 // Helper function to get TMDB info
-function getTmdbInfo(tmdbId, mediaType) {
+function getTmdbInfo(tmdbId, mediaType, signal) {
     const cleanId = String(tmdbId).replace(/^tmdb:/, '').split(':')[0].trim();
     const isImdb = cleanId.startsWith('tt');
     const isTV = (mediaType === 'tv' || mediaType === 'series');
@@ -208,7 +217,7 @@ function getTmdbInfo(tmdbId, mediaType) {
         url = `https://api.themoviedb.org/3/${isTV ? 'tv' : 'movie'}/${cleanId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
     }
     
-    return makeRequest(url)
+    return makeRequest(url, { signal })
     .then(response => response.json())
     .then(raw => {
         let data = raw;
@@ -216,14 +225,14 @@ function getTmdbInfo(tmdbId, mediaType) {
             data = isTV ? (raw.tv_results && raw.tv_results[0]) : (raw.movie_results && raw.movie_results[0]);
         }
         if (!data) {
-            throw new Error('Could not find media on TMDB');
+            throw new ProviderError('NO_MATCH', 'Could not find media on TMDB', 'tmdb');
         }
         const title = isTV ? data.name : data.title;
         const year = isTV ? data.first_air_date?.substring(0, 4) : data.release_date?.substring(0, 4);
         const imdbId = isImdb ? cleanId : (data.imdb_id || (data.external_ids && data.external_ids.imdb_id) || '');
         
         if (!title) {
-            throw new Error('Could not extract title from TMDB response');
+            throw new ProviderError('PARSE_ERROR', 'Could not extract title from TMDB response', 'tmdb');
         }
         
         console.log(`[Vidlink] TMDB Info: "${title}" (${year}), Numeric ID: ${data.id}`);
@@ -234,11 +243,16 @@ function getTmdbInfo(tmdbId, mediaType) {
 
 // Encrypt TMDB ID using enc-dec.app API
 // enc-dec.app is flaky (5xx bursts / slow responses), so retry up to 4 times
-function encryptTmdbId(tmdbId) {
+function encryptTmdbId(tmdbId, signal) {
     console.log(`[Vidlink] Encrypting TMDB ID: ${tmdbId}`);
     
     function attempt(n) {
-        return makeRequest(`${ENC_DEC_API}/enc-vidlink?text=${tmdbId}`)
+        if (signal && signal.aborted) {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            return Promise.reject(err);
+        }
+        return makeRequest(`${ENC_DEC_API}/enc-vidlink?text=${tmdbId}`, { signal })
         .then(response => response.json())
         .then(data => {
             if (data && data.result) {
@@ -248,10 +262,27 @@ function encryptTmdbId(tmdbId) {
             throw new Error('Invalid encryption response format');
         })
         .catch(error => {
+            if (error && (error.name === 'AbortError' || error.message === 'TIMEOUT' || error.name === 'ProviderError' || (signal && signal.aborted))) {
+                throw error;
+            }
             console.error(`[Vidlink] Encryption attempt ${n} failed: ${error.message}`);
             if (n < 4) {
-                return new Promise(resolve => setTimeout(resolve, 1500 * n))
-                    .then(() => attempt(n + 1));
+                return new Promise((resolve, reject) => {
+                    if (signal && signal.aborted) {
+                        const err = new Error('The operation was aborted');
+                        err.name = 'AbortError';
+                        return reject(err);
+                    }
+                    const timer = setTimeout(resolve, 1500 * n);
+                    if (signal && signal.addEventListener) {
+                        signal.addEventListener('abort', () => {
+                            clearTimeout(timer);
+                            const err = new Error('The operation was aborted');
+                            err.name = 'AbortError';
+                            reject(err);
+                        }, { once: true });
+                    }
+                }).then(() => attempt(n + 1));
             }
             throw error;
         });
@@ -259,6 +290,9 @@ function encryptTmdbId(tmdbId) {
     
     return attempt(1)
     .catch(error => {
+        if (error && (error.name === 'AbortError' || error.message === 'TIMEOUT' || error.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw error;
+        }
         console.error(`[Vidlink] Encryption failed after retries: ${error.message}`);
         throw error;
     });
@@ -443,13 +477,14 @@ function processVidlinkResponse(data, mediaInfo) {
 }
 
 // getStreams fonksiyonu aynen kalıyor, sadece processVidlinkResponse içindeki dil geliştirmelerini kullanıyor.
-function getStreams(tmdbId, mediaType = 'movie', seasonNum = null, episodeNum = null) {
+function getStreams(tmdbId, mediaType = 'movie', seasonNum = null, episodeNum = null, options = {}) {
+    const signal = options && options.signal;
     console.log(`[Vidlink] Fetching streams for TMDB ID: ${tmdbId}`);
     
-    return getTmdbInfo(tmdbId, mediaType)
+    return getTmdbInfo(tmdbId, mediaType, signal)
     .then(tmdbInfo => {
         const { title, year, id: numericId } = tmdbInfo;
-        return encryptTmdbId(numericId)
+        return encryptTmdbId(numericId, signal)
         .then(encryptedId => {
             let vidlinkUrl;
             if (mediaType === 'tv' && seasonNum && episodeNum) {
@@ -458,7 +493,7 @@ function getStreams(tmdbId, mediaType = 'movie', seasonNum = null, episodeNum = 
                 vidlinkUrl = `${VIDLINK_API}/movie/${encryptedId}`;
             }
             
-            return makeRequest(vidlinkUrl, { headers: VIDLINK_HEADERS })
+            return makeRequest(vidlinkUrl, { headers: VIDLINK_HEADERS, signal })
             .then(response => response.json())
             .then(data => {
                 const mediaInfo = { title, year, mediaType, season: seasonNum, episode: episodeNum };
@@ -471,7 +506,7 @@ function getStreams(tmdbId, mediaType = 'movie', seasonNum = null, episodeNum = 
                 
                 if (playlistStreams.length > 0) {
                     const playlistPromises = playlistStreams.map(ps => 
-                        fetchAndParseM3U8(ps.url, ps.mediaInfo)
+                        fetchAndParseM3U8(ps.url, ps.mediaInfo, signal)
                     );
                     
                     return Promise.all(playlistPromises)
@@ -488,6 +523,9 @@ function getStreams(tmdbId, mediaType = 'movie', seasonNum = null, episodeNum = 
                 }
             })
             .catch(err => {
+                if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT' || err.name === 'ProviderError' || (signal && signal.aborted))) {
+                    throw err;
+                }
                 if (tmdbInfo.imdbId) {
                     const isTV = (mediaType === 'tv' || mediaType === 'series');
                     const vixUrl = isTV && seasonNum && episodeNum
@@ -498,7 +536,7 @@ function getStreams(tmdbId, mediaType = 'movie', seasonNum = null, episodeNum = 
                         'Referer': 'https://ha.vixolity.com/',
                         'Origin': 'https://ha.vixolity.com'
                     };
-                    return fetch(vixUrl, { headers: vixHeaders }).then(r => {
+                    return fetchWithTimeout(vixUrl, { headers: vixHeaders, signal }, 8000).then(r => {
                         if (!r.ok) return [];
                         return r.text().then(txt => {
                             if (!txt || !txt.includes('#EXTM3U')) return [];
@@ -517,13 +555,21 @@ function getStreams(tmdbId, mediaType = 'movie', seasonNum = null, episodeNum = 
                                 provider: 'vidlink'
                             }];
                         });
-                    }).catch(() => []);
+                    }).catch(e => {
+                        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+                            throw e;
+                        }
+                        return [];
+                    });
                 }
                 throw err;
             });
         });
     })
     .catch(error => {
+        if (error && (error.name === 'AbortError' || error.message === 'TIMEOUT' || error.name === 'ProviderError' || (signal && signal.aborted))) {
+            throw error;
+        }
         console.error(`[Vidlink] Error in getStreams: ${error.message}`);
         return [];
     });

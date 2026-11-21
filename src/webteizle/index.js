@@ -1,5 +1,7 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
+const { fetchWithTimeout } = require("../shared/http.js");
+const { ProviderError } = require("../shared/errors.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -31,7 +33,7 @@ var HEADERS = {
 };
 
 // TMDB Verisi
-async function fetchTmdbInfo(tmdbId, mediaType) {
+async function fetchTmdbInfo(tmdbId, mediaType, signal) {
   var cleanId = String(tmdbId || '').trim();
   if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
 
@@ -40,7 +42,7 @@ async function fetchTmdbInfo(tmdbId, mediaType) {
   var isImdb = cleanId.startsWith('tt');
 
   if (isImdb) {
-    var fRes = await fetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id');
+    var fRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', { signal }, 8000);
     if (fRes.ok) {
       var fData = await fRes.json();
       var match = isTV ? (fData.tv_results && fData.tv_results[0]) : (fData.movie_results && fData.movie_results[0]);
@@ -54,7 +56,7 @@ async function fetchTmdbInfo(tmdbId, mediaType) {
     }
   }
 
-  var res = await fetch('https://api.themoviedb.org/3/' + endpoint + '/' + cleanId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR');
+  var res = await fetchWithTimeout('https://api.themoviedb.org/3/' + endpoint + '/' + cleanId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal }, 8000);
   if (!res.ok) return { titleTr: '', titleEn: '', year: '' };
   var d = await res.json();
   return {
@@ -73,7 +75,7 @@ function titleToSlug(title) {
 }
 
 // Sayfa Bulma
-async function findFilmPage(titleTr, titleEn) {
+async function findFilmPage(titleTr, titleEn, signal) {
   var slugTr = titleToSlug(titleTr);
   var slugEn = titleToSlug(titleEn);
 
@@ -89,32 +91,37 @@ async function findFilmPage(titleTr, titleEn) {
 
   for (var url of candidates) {
     try {
-      var r = await fetch(url, { headers: HEADERS });
+      var r = await fetchWithTimeout(url, { headers: HEADERS, signal }, 8000);
       if (r.ok) {
         var html = await r.text();
         if (html.indexOf('data-id') !== -1 && html.indexOf('id="wip"') !== -1) {
           return { url: url, html: html };
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+        throw e;
+      }
+    }
   }
 
-  return await searchFallback(titleTr, titleEn);
+  return await searchFallback(titleTr, titleEn, signal);
 }
 
 // Arama Fallback
-async function searchFallback(titleTr, titleEn) {
+async function searchFallback(titleTr, titleEn, signal) {
   var queries = [titleTr, titleEn].filter(Boolean);
   for (var query of queries) {
     try {
-      var r = await fetch(BASE_URL + '/ajax/arama.asp', {
+      var r = await fetchWithTimeout(BASE_URL + '/ajax/arama.asp', {
         method: 'POST',
         headers: Object.assign({}, HEADERS, {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'X-Requested-With': 'XMLHttpRequest'
         }),
-        body: 'q=' + encodeURIComponent(query)
-      });
+        body: 'q=' + encodeURIComponent(query),
+        signal: signal
+      }, 8000);
       if (!r.ok) continue;
       var data = await r.json();
       if (data.status === 'success' && data.results && data.results.filmler && Array.isArray(data.results.filmler.results)) {
@@ -122,14 +129,18 @@ async function searchFallback(titleTr, titleEn) {
         if (items.length > 0) {
           var best = items[0];
           var pageUrl = best.url.startsWith('http') ? best.url : BASE_URL + best.url;
-          var pRes = await fetch(pageUrl, { headers: HEADERS });
+          var pRes = await fetchWithTimeout(pageUrl, { headers: HEADERS, signal }, 8000);
           if (pRes.ok) {
             var html = await pRes.text();
             return { url: pageUrl, html: html };
           }
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+        throw e;
+      }
+    }
   }
   return null;
 }
@@ -152,38 +163,43 @@ function parseDilList(html, pageUrl) {
 }
 
 // Alternatifleri Getir
-async function fetchAlternatifler(filmId, dil, seasonNum, episodeNum) {
+async function fetchAlternatifler(filmId, dil, seasonNum, episodeNum, signal) {
   var body = 'filmid=' + filmId + '&dil=' + dil + '&s=' + (seasonNum || '') + '&b=' + (episodeNum || '') + '&bot=0';
   try {
-    var r = await fetch(BASE_URL + '/ajax/dataAlternatif3.asp', {
+    var r = await fetchWithTimeout(BASE_URL + '/ajax/dataAlternatif3.asp', {
       method: 'POST',
       headers: Object.assign({}, HEADERS, { 
         'Content-Type': 'application/x-www-form-urlencoded', 
         'X-Requested-With': 'XMLHttpRequest', 
         'Origin': BASE_URL 
       }),
-      body: body
-    });
+      body: body,
+      signal: signal
+    }, 8000);
     if (!r.ok) return [];
     var data = await r.json();
     return (data.status === 'success' && Array.isArray(data.data)) ? data.data : [];
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      throw e;
+    }
     return [];
   }
 }
 
 // Embed Çözücü
-async function fetchEmbedIframe(embedId) {
+async function fetchEmbedIframe(embedId, signal) {
   try {
-    var r = await fetch(BASE_URL + '/ajax/dataEmbed.asp', {
+    var r = await fetchWithTimeout(BASE_URL + '/ajax/dataEmbed.asp', {
       method: 'POST',
       headers: Object.assign({}, HEADERS, { 
         'Content-Type': 'application/x-www-form-urlencoded', 
         'X-Requested-With': 'XMLHttpRequest', 
         'Origin': BASE_URL 
       }),
-      body: 'id=' + embedId
-    });
+      body: 'id=' + embedId,
+      signal: signal
+    }, 8000);
     if (!r.ok) return null;
     var html = await r.text();
     var m = html.match(/<iframe[^>]+src="([^"]+)"/i);
@@ -199,36 +215,43 @@ async function fetchEmbedIframe(embedId) {
     }
     return null;
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      throw e;
+    }
     return null;
   }
 }
 
 // VidMoly M3U8 Çekici
-async function fetchVidMolyStream(iframeUrl) {
+async function fetchVidMolyStream(iframeUrl, signal) {
   var fullUrl = iframeUrl.startsWith('//') ? 'https:' + iframeUrl : iframeUrl;
   fullUrl = fullUrl.replace('vidmoly.to', 'vidmoly.biz').replace('vidmoly.net', 'vidmoly.biz');
   try {
-    var r = await fetch(fullUrl, { 
+    var r = await fetchWithTimeout(fullUrl, { 
       headers: {
         'User-Agent': HEADERS['User-Agent'],
         'Referer': BASE_URL + '/'
-      }
-    });
+      },
+      signal: signal
+    }, 8000);
     if (!r.ok) return null;
     var html = await r.text();
     var m = html.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]/i);
     return m ? { url: m[1], type: 'hls', referer: 'https://vidmoly.biz/' } : null;
   } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      throw e;
+    }
     return null;
   }
 }
 
 // Embed İşleyici
-async function processEmbed(embedData, dilAd, movieTitle) {
+async function processEmbed(embedData, dilAd, movieTitle, signal) {
   var baslik = (embedData.baslik || '').toLowerCase();
   if (baslik === 'pixel' || baslik === 'netu') return null;
 
-  var src = await fetchEmbedIframe(embedData.id);
+  var src = await fetchEmbedIframe(embedData.id, signal);
   if (!src) return null;
 
   var flag = dilAd.includes('Dublaj') ? '🇹🇷 ' : '🌐 ';
@@ -240,7 +263,7 @@ async function processEmbed(embedData, dilAd, movieTitle) {
   var q = embedData.kalite || '1080p';
 
   if (src.indexOf('vidmoly') !== -1) {
-    var s = await fetchVidMolyStream(src);
+    var s = await fetchVidMolyStream(src, signal);
     if (s) {
       var sHeaders = {
         'User-Agent': HEADERS['User-Agent'],
@@ -265,7 +288,8 @@ async function processEmbed(embedData, dilAd, movieTitle) {
 }
 
 // Ana Fonksiyon
-async function getStreams(tmdbId, mediaType, season, episode) {
+async function getStreams(tmdbId, mediaType, season, episode, options) {
+  const signal = options && options.signal;
   try {
     if (typeof tmdbId === 'object' && tmdbId !== null) {
       mediaType = tmdbId.type || mediaType;
@@ -278,11 +302,11 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
     var isTV = (mediaType === 'tv' || mediaType === 'series');
 
-    var info = await fetchTmdbInfo(tmdbId, mediaType);
+    var info = await fetchTmdbInfo(tmdbId, mediaType, signal);
     var movieName = info.titleTr || info.titleEn;
     if (!movieName) return [];
 
-    var pageResult = await findFilmPage(info.titleTr, info.titleEn);
+    var pageResult = await findFilmPage(info.titleTr, info.titleEn, signal);
     if (!pageResult || !pageResult.html) return [];
 
     var filmId = parseFilmId(pageResult.html);
@@ -292,9 +316,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     var streams = [];
 
     for (var d of diller) {
-      var embedList = await fetchAlternatifler(filmId, d.dil, season, episode);
+      var embedList = await fetchAlternatifler(filmId, d.dil, season, episode, signal);
       for (var e of embedList) {
-        var s = await processEmbed(e, d.ad, movieName);
+        var s = await processEmbed(e, d.ad, movieName, signal);
         if (s && !streams.some(x => x.url === s.url)) {
           streams.push(s);
         }
@@ -303,6 +327,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     return streams;
   } catch (err) {
+    if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT' || err.name === 'ProviderError' || (signal && signal.aborted))) {
+      throw err;
+    }
     console.error('[Webteİzle] Hata:', err.message);
     return [];
   }

@@ -194,11 +194,103 @@ var require_config2 = __commonJS({
   }
 });
 
+// src/shared/http.js
+var require_http = __commonJS({
+  "src/shared/http.js"(exports2, module2) {
+    var DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    function timeoutSignal(ms) {
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        return AbortSignal.timeout(ms);
+      }
+      var controller = new AbortController();
+      setTimeout(function() {
+        controller.abort(new Error("TIMEOUT"));
+      }, ms);
+      return controller.signal;
+    }
+    function combineSignals(signals) {
+      var valid = [];
+      for (var i = 0; i < (signals || []).length; i++) {
+        if (signals[i]) valid.push(signals[i]);
+      }
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      for (var j = 0; j < valid.length; j++) {
+        if (valid[j].aborted) {
+          return valid[j];
+        }
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any(valid);
+      }
+      var controller = new AbortController();
+      function onAbort() {
+        controller.abort(this ? this.reason : void 0);
+        for (var k = 0; k < valid.length; k++) {
+          try {
+            valid[k].removeEventListener("abort", onAbort);
+          } catch (_) {
+          }
+        }
+      }
+      for (var m = 0; m < valid.length; m++) {
+        valid[m].addEventListener("abort", onAbort, { once: true });
+      }
+      return controller.signal;
+    }
+    function fetchWithTimeout(url, options, ms) {
+      ms = ms || 8e3;
+      options = options || {};
+      var timeoutSig = timeoutSignal(ms);
+      if (options.signal) {
+        options.signal = combineSignals([options.signal, timeoutSig]);
+      } else {
+        options.signal = timeoutSig;
+      }
+      if (!options.headers) {
+        options.headers = {};
+      }
+      if (!options.headers["User-Agent"] && !options.headers["user-agent"]) {
+        options.headers["User-Agent"] = DEFAULT_UA;
+      }
+      return fetch(url, options);
+    }
+    module2.exports = {
+      DEFAULT_UA,
+      timeoutSignal,
+      combineSignals,
+      fetchWithTimeout
+    };
+  }
+});
+
+// src/shared/errors.js
+var require_errors = __commonJS({
+  "src/shared/errors.js"(exports2, module2) {
+    function ProviderError(code, message, stage, status) {
+      var err = new Error(message || code);
+      err.name = "ProviderError";
+      err.code = code;
+      err.stage = stage;
+      err.status = status;
+      Object.setPrototypeOf(err, ProviderError.prototype);
+      return err;
+    }
+    ProviderError.prototype = Object.create(Error.prototype);
+    ProviderError.prototype.constructor = ProviderError;
+    module2.exports = {
+      ProviderError
+    };
+  }
+});
+
 // src/yabancidizi/index.js
 var require_yabancidizi = __commonJS({
   "src/yabancidizi/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
+    var { fetchWithTimeout } = require_http();
+    var { ProviderError } = require_errors();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -220,57 +312,20 @@ var require_yabancidizi = __commonJS({
       "Referer": BASE_URL + "/"
     };
     function safeFetch(url, options) {
-      options = options || {};
-      if (typeof process !== "undefined" && process.versions && process.versions.node) {
-        try {
-          var https = require("https");
-          var http = require("http");
-          var u = new URL(url);
-          var mod = u.protocol === "http:" ? http : https;
-          return new Promise(function(resolve, reject) {
-            var req = mod.request({
-              hostname: u.hostname,
-              port: u.port || (u.protocol === "http:" ? 80 : 443),
-              path: u.pathname + u.search,
-              method: options.method || "GET",
-              headers: options.headers || {}
-            }, function(res) {
-              var data = "";
-              res.on("data", function(chunk) {
-                data += chunk;
-              });
-              res.on("end", function() {
-                resolve({
-                  ok: res.statusCode >= 200 && res.statusCode < 300,
-                  status: res.statusCode,
-                  headers: res.headers,
-                  text: function() {
-                    return __async(this, null, function* () {
-                      return data;
-                    });
-                  },
-                  json: function() {
-                    return __async(this, null, function* () {
-                      return JSON.parse(data);
-                    });
-                  }
-                });
-              });
-            });
-            req.on("error", reject);
-            if (options.body) req.write(options.body);
-            req.end();
-          });
-        } catch (e) {
+      return __async(this, null, function* () {
+        options = options || {};
+        var res = yield fetchWithTimeout(url, options, 8e3);
+        if (res.status === 403) {
+          throw new ProviderError("HTTP_BLOCKED", "Yabanc\u0131Dizi Cloudflare 403 Forbidden", "network", 403);
         }
-      }
-      return fetch(url, options);
+        return res;
+      });
     }
     function ultraClean(str) {
       if (!str) return "";
       return str.toString().toLowerCase().replace(/[ıİ]/g, "i").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[çÇ]/g, "c").replace(/[^a-z0-9]/g, "").trim();
     }
-    function resolveTmdbInfo(id, mediaType) {
+    function resolveTmdbInfo(id, mediaType, signal) {
       return __async(this, null, function* () {
         try {
           var cleanId = String(id || "").trim();
@@ -279,7 +334,7 @@ var require_yabancidizi = __commonJS({
           var title = "";
           var origTitle = "";
           if (cleanId.startsWith("tt")) {
-            var findRes = yield safeFetch("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id");
+            var findRes = yield safeFetch("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", { signal });
             if (findRes.ok) {
               var fData = yield findRes.json();
               var item = mediaType === "tv" || mediaType === "series" ? fData.tv_results && fData.tv_results[0] : fData.movie_results && fData.movie_results[0];
@@ -294,7 +349,7 @@ var require_yabancidizi = __commonJS({
           }
           if (numericId && (!title || !origTitle)) {
             var type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
-            var tRes = yield safeFetch("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR");
+            var tRes = yield safeFetch("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", { signal });
             if (tRes.ok) {
               var tData = yield tRes.json();
               title = tData.name || tData.title || title;
@@ -303,11 +358,14 @@ var require_yabancidizi = __commonJS({
           }
           return { title, origTitle, numericId };
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return { title: "", origTitle: "", numericId: id };
         }
       });
     }
-    function searchYabanciDizi(query) {
+    function searchYabanciDizi(query, signal) {
       return __async(this, null, function* () {
         try {
           var searchUrl = BASE_URL + "/search?qr=" + encodeURIComponent(query);
@@ -318,7 +376,8 @@ var require_yabancidizi = __commonJS({
               "X-Requested-With": "XMLHttpRequest",
               "Accept": "application/json, text/javascript, */*; q=0.01",
               "Referer": BASE_URL + "/"
-            }
+            },
+            signal
           });
           if (!res.ok) return [];
           var data = yield res.json();
@@ -327,16 +386,19 @@ var require_yabancidizi = __commonJS({
           }
           return [];
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return [];
         }
       });
     }
-    function getCatalog(args) {
+    function getCatalog(args, signal) {
       return __async(this, null, function* () {
         try {
           var query = args && args.search || args && args.extra && args.extra.search || args && args.query || "";
           if (query) {
-            var results = yield searchYabanciDizi(query);
+            var results = yield searchYabanciDizi(query, signal);
             var metas = results.map(function(r) {
               var poster = r.s_image ? r.s_image.startsWith("http") ? r.s_image : BASE_URL + "/uploads/series/" + r.s_image : "";
               return {
@@ -351,7 +413,7 @@ var require_yabancidizi = __commonJS({
             });
             return { metas };
           }
-          var res = yield safeFetch(BASE_URL + "/", { headers: HEADERS });
+          var res = yield safeFetch(BASE_URL + "/", { headers: HEADERS, signal });
           if (!res.ok) return { metas: [] };
           var html = yield res.text();
           var cardRegex = /<a[^>]+href=["'](?:https?:\/\/[^"'/]+)?\/?dizi\/([^"'/]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
@@ -376,11 +438,14 @@ var require_yabancidizi = __commonJS({
           }
           return { metas };
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return { metas: [] };
         }
       });
     }
-    function getMeta(args) {
+    function getMeta(args, signal) {
       return __async(this, null, function* () {
         try {
           var rawId = typeof args === "string" ? args : args && args.id ? args.id : "";
@@ -388,7 +453,7 @@ var require_yabancidizi = __commonJS({
           if (rawId.startsWith("yabancidizi:show:")) {
             var showSlug = rawId.replace("yabancidizi:show:", "");
             var showUrl = BASE_URL + "/dizi/" + showSlug;
-            var res = yield safeFetch(showUrl, { headers: HEADERS });
+            var res = yield safeFetch(showUrl, { headers: HEADERS, signal });
             if (!res.ok) return { meta: null };
             var html = yield res.text();
             var titleMatch = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<title>([^<]+)<\/title>/i);
@@ -429,18 +494,22 @@ var require_yabancidizi = __commonJS({
           }
           return { meta: null };
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return { meta: null };
         }
       });
     }
-    function extractStreamsFromEpisodePage(epUrl) {
+    function extractStreamsFromEpisodePage(epUrl, signal) {
       return __async(this, null, function* () {
         try {
           var epRes = yield safeFetch(epUrl, {
             headers: {
               "User-Agent": HEADERS["User-Agent"],
               "Referer": BASE_URL + "/"
-            }
+            },
+            signal
           });
           if (!epRes.ok) return [];
           var html = yield epRes.text();
@@ -464,7 +533,8 @@ var require_yabancidizi = __commonJS({
                 headers: {
                   "User-Agent": HEADERS["User-Agent"],
                   "Referer": BASE_URL + "/"
-                }
+                },
+                signal
               });
               if (vmRes.ok) {
                 var vmHtml = yield vmRes.text();
@@ -494,6 +564,9 @@ var require_yabancidizi = __commonJS({
                 }
               }
             } catch (err) {
+              if (err && (err.name === "AbortError" || err.message === "TIMEOUT" || err.name === "ProviderError" || signal && signal.aborted)) {
+                throw err;
+              }
             }
           }
           while ((m = vmRegex.exec(html)) !== null) {
@@ -506,7 +579,8 @@ var require_yabancidizi = __commonJS({
                 headers: {
                   "User-Agent": HEADERS["User-Agent"],
                   "Referer": BASE_URL + "/"
-                }
+                },
+                signal
               });
               if (vmRes2.ok) {
                 var vmHtml2 = yield vmRes2.text();
@@ -534,19 +608,26 @@ var require_yabancidizi = __commonJS({
                 }
               }
             } catch (e) {
+              if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+                throw e;
+              }
             }
           }
           return streams;
         } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
+            throw e;
+          }
           return [];
         }
       });
     }
-    function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
+    function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
       return __async(this, null, function* () {
+        const signal = options && options.signal;
         try {
           if (typeof tmdbIdOrArgs === "object" && tmdbIdOrArgs && tmdbIdOrArgs.id) {
-            return getStreams(tmdbIdOrArgs.id, mediaType || tmdbIdOrArgs.type, seasonNum || tmdbIdOrArgs.season, episodeNum || tmdbIdOrArgs.episode);
+            return getStreams(tmdbIdOrArgs.id, mediaType || tmdbIdOrArgs.type, seasonNum || tmdbIdOrArgs.season, episodeNum || tmdbIdOrArgs.episode, options);
           }
           if (typeof tmdbIdOrArgs === "string" && tmdbIdOrArgs.startsWith("yabancidizi:ep:")) {
             var parts = tmdbIdOrArgs.replace("yabancidizi:ep:", "").split(":");
@@ -554,23 +635,23 @@ var require_yabancidizi = __commonJS({
             var s = parts[1] || "1";
             var e = parts[2] || "1";
             var epUrl = BASE_URL + "/dizi/" + sSlug + "/sezon-" + s + "/bolum-" + e;
-            return yield extractStreamsFromEpisodePage(epUrl);
+            return yield extractStreamsFromEpisodePage(epUrl, signal);
           }
           if (typeof tmdbIdOrArgs === "string" && tmdbIdOrArgs.startsWith("yabancidizi:show:")) {
-            var showMeta = yield getMeta(tmdbIdOrArgs);
+            var showMeta = yield getMeta(tmdbIdOrArgs, signal);
             if (showMeta && showMeta.meta && Array.isArray(showMeta.meta.videos) && showMeta.meta.videos.length > 0) {
-              return yield getStreams(showMeta.meta.videos[0].id);
+              return yield getStreams(showMeta.meta.videos[0].id, mediaType, seasonNum, episodeNum, options);
             }
           }
           var season = parseInt(seasonNum) || 1;
           var episode = parseInt(episodeNum) || 1;
-          var info = yield resolveTmdbInfo(tmdbIdOrArgs, mediaType);
+          var info = yield resolveTmdbInfo(tmdbIdOrArgs, mediaType, signal);
           var searchTitles = [info.origTitle, info.title].filter(Boolean);
           if (searchTitles.length === 0) return [];
           for (var title of searchTitles) {
-            var results = yield searchYabanciDizi(title);
+            var results = yield searchYabanciDizi(title, signal);
             if (results.length === 0) {
-              var cat = yield getCatalog({ query: title });
+              var cat = yield getCatalog({ query: title }, signal);
               if (cat && cat.metas && cat.metas.length > 0) {
                 results = cat.metas.map(function(m) {
                   return {
@@ -604,11 +685,14 @@ var require_yabancidizi = __commonJS({
             }
             if (!matchedShow || !matchedShow.s_link) continue;
             var targetEpUrl = BASE_URL + "/dizi/" + matchedShow.s_link + "/sezon-" + season + "/bolum-" + episode;
-            var streams = yield extractStreamsFromEpisodePage(targetEpUrl);
+            var streams = yield extractStreamsFromEpisodePage(targetEpUrl, signal);
             if (streams.length > 0) return streams;
           }
           return [];
         } catch (e2) {
+          if (e2 && (e2.name === "AbortError" || e2.message === "TIMEOUT" || e2.name === "ProviderError" || signal && signal.aborted)) {
+            throw e2;
+          }
           return [];
         }
       });
@@ -637,6 +721,7 @@ var require_yabancidizi = __commonJS({
 // src/shared/adapter.js
 var require_adapter = __commonJS({
   "src/shared/adapter.js"(exports2, module2) {
+    var { combineSignals } = require_http();
     function normalizeStreams(raw) {
       if (!Array.isArray(raw)) throw new Error("INVALID_RESULT");
       var seen = /* @__PURE__ */ Object.create(null), invalid = 0;
@@ -660,11 +745,28 @@ var require_adapter = __commonJS({
     }
     function adapt2(provider2, source, emit, options) {
       if (!provider2 || typeof provider2.getStreams !== "function") throw new Error("MISSING_EXPORT");
-      var limit = options && options.timeoutMs || source.timeoutMs || 12e3;
-      return { getStreams: function(id, type, season, episode) {
+      var defaultLimit = options && options.timeoutMs || source.timeoutMs || 12e3;
+      return { getStreams: function(id, type, season, episode, callOptions) {
         return __async(this, null, function* () {
           var started = Date.now(), timer, timedOut = false;
+          var activeLimit = callOptions && callOptions.timeoutMs || defaultLimit;
           var abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+          var externalSignal = callOptions && callOptions.signal;
+          if (externalSignal && abortCtrl) {
+            if (externalSignal.aborted) {
+              try {
+                abortCtrl.abort(externalSignal.reason);
+              } catch (_) {
+              }
+            } else if (externalSignal.addEventListener) {
+              externalSignal.addEventListener("abort", function() {
+                try {
+                  abortCtrl.abort(externalSignal.reason);
+                } catch (_) {
+                }
+              }, { once: true });
+            }
+          }
           var record = { provider: source.id, status: "started", count: 0, rejected: 0, elapsedMs: 0, playback: "unverified" };
           function report() {
             record.elapsedMs = Date.now() - started;
@@ -684,7 +786,11 @@ var require_adapter = __commonJS({
               record.status = "invalid-input";
               return [];
             }
-            var callOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
+            var effectiveSignal = abortCtrl ? abortCtrl.signal : externalSignal;
+            if (externalSignal && abortCtrl && typeof combineSignals === "function") {
+              effectiveSignal = combineSignals([externalSignal, abortCtrl.signal]);
+            }
+            var callOpts = effectiveSignal ? { signal: effectiveSignal } : {};
             var result = yield Promise.race([
               Promise.resolve().then(function() {
                 return provider2.getStreams(id, type, season, episode, callOpts);
@@ -699,7 +805,7 @@ var require_adapter = __commonJS({
                     }
                   }
                   reject(new Error("TIMEOUT"));
-                }, limit);
+                }, activeLimit);
               })
             ]);
             var normalized = normalizeStreams(result);
@@ -714,7 +820,7 @@ var require_adapter = __commonJS({
               } catch (_) {
               }
             }
-            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT")) {
+            if (timedOut || err && (err.name === "AbortError" || err.message === "TIMEOUT") || externalSignal && externalSignal.aborted) {
               record.status = "timeout";
             } else if (err && err.name === "ProviderError") {
               if (err.code === "HTTP_BLOCKED") record.status = "http-blocked";

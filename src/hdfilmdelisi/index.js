@@ -65,7 +65,7 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         var year = '';
         if (cleanId.startsWith('tt')) {
             imdbId = cleanId;
-            var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', {}, 10000);
+            var findRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', { signal: signal }, 8000);
             if (findRes.ok) {
                 var fd = await findRes.json();
                 var match = (mediaType === 'tv' || mediaType === 'series')
@@ -81,7 +81,7 @@ async function resolveTmdbInfo(id, mediaType, signal) {
             }
         } else {
             var type = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
-            var tRes = await fetchWithTimeout('https://api.themoviedb.org/3/' + type + '/' + cleanId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', {}, 10000);
+            var tRes = await fetchWithTimeout('https://api.themoviedb.org/3/' + type + '/' + cleanId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal: signal }, 8000);
             if (tRes.ok) {
                 var td = await tRes.json();
                 title = td.name || td.title || '';
@@ -91,7 +91,7 @@ async function resolveTmdbInfo(id, mediaType, signal) {
                 if (td.imdb_id) imdbId = td.imdb_id;
             }
             if (!imdbId && (mediaType === 'tv' || mediaType === 'series')) {
-                var extRes = await fetchWithTimeout('https://api.themoviedb.org/3/tv/' + cleanId + '/external_ids?api_key=' + TMDB_API_KEY, {}, 6000);
+                var extRes = await fetchWithTimeout('https://api.themoviedb.org/3/tv/' + cleanId + '/external_ids?api_key=' + TMDB_API_KEY, { signal: signal }, 8000);
                 if (extRes.ok) {
                     var extData = await extRes.json();
                     if (extData && extData.imdb_id) imdbId = extData.imdb_id;
@@ -100,19 +100,26 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         }
         return { title: title, origTitle: origTitle, imdbId: imdbId, year: year };
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+            throw e;
+        }
         return { title: '', origTitle: '', imdbId: '', year: '' };
     }
 }
 
-async function apiSearch(query) {
+async function apiSearch(query, signal) {
     try {
         var res = await fetchWithTimeout(BASE_URL + '/api/search?q=' + encodeURIComponent(query), {
-            headers: { 'User-Agent': HEADERS['User-Agent'], 'Referer': BASE_URL + '/' }
-        }, 15000);
+            headers: { 'User-Agent': HEADERS['User-Agent'], 'Referer': BASE_URL + '/' },
+            signal: signal
+        }, 8000);
         if (!res.ok) return [];
         var data = await res.json();
         return (data && (data.results || data.films)) || [];
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+            throw e;
+        }
         return [];
     }
 }
@@ -152,17 +159,18 @@ function vidmodyDecrypt(hex, key) {
     }
 }
 
-async function extractVidmodyFile(pageUrl) {
+async function extractVidmodyFile(pageUrl, signal) {
     try {
-        var res = await fetchWithTimeout(pageUrl, { headers: HEADERS }, 15000);
+        var res = await fetchWithTimeout(pageUrl, { headers: HEADERS, signal: signal }, 8000);
         if (!res.ok) return null;
         var html = await res.text();
         var vm = html.match(/https?:[\\/]+player\.vidmody\.com[\\/][a-zA-Z0-9=\\/]+/);
         if (!vm) return null;
         var playerUrl = vm[0].split('\\').join('/');
         var pRes = await fetchWithTimeout(playerUrl, {
-            headers: { 'User-Agent': HEADERS['User-Agent'], 'Referer': pageUrl }
-        }, 15000);
+            headers: { 'User-Agent': HEADERS['User-Agent'], 'Referer': pageUrl },
+            signal: signal
+        }, 8000);
         if (!pRes.ok) return null;
         var pHtml = await pRes.text();
         var dMatch = pHtml.match(/(?:decrypt|\))\s*\(\s*["']([0-9a-fA-F]+)["']\s*,\s*(\d+)\s*\)/);
@@ -182,6 +190,9 @@ async function extractVidmodyFile(pageUrl) {
         }
         return { file: fMatch[1], playerUrl: playerUrl, subtitles: subs };
     } catch (e) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+            throw e;
+        }
         return null;
     }
 }
@@ -341,7 +352,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
                     }
                 }
             }
-            var found = await extractVidmodyFile(BASE_URL + '/film/' + slug);
+            var found = await extractVidmodyFile(BASE_URL + '/film/' + slug, signal);
             if (found && !seenUrls.has(found.file)) {
                 streams.push(toStream(found.file, found.subtitles));
                 seenUrls.add(found.file);
@@ -373,7 +384,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
         var searchTitles = [info.title, info.origTitle].filter(Boolean);
         var hadResults = false;
         for (var t = 0; t < searchTitles.length; t++) {
-            var results = await apiSearch(searchTitles[t]);
+            var results = await apiSearch(searchTitles[t], signal);
             if (!results || results.length === 0) continue;
             hadResults = true;
             var best = pickBest(results, searchTitles[t], info.year);
@@ -392,7 +403,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
                 }
             }
 
-            var vf = await extractVidmodyFile(BASE_URL + '/film/' + best.slug);
+            var vf = await extractVidmodyFile(BASE_URL + '/film/' + best.slug, signal);
             if (vf && !seenUrls.has(vf.file)) {
                 streams.push(toStream(vf.file, vf.subtitles));
                 seenUrls.add(vf.file);
@@ -406,7 +417,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
 
         return streams;
     } catch (e) {
-        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT')) {
+        if (e && (e.name === 'ProviderError' || e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
             throw e;
         }
         return [];

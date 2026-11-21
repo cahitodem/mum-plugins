@@ -339,6 +339,50 @@ async function decryptBysePlayback(playback) {
   }
 }
 
+function parseMasterVariants(masterContent, masterUrl) {
+  var lines = masterContent.split(/\r?\n/);
+  var variants = [];
+  var currentStreamInf = null;
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (line.indexOf('#EXT-X-STREAM-INF:') === 0) {
+      currentStreamInf = line;
+    } else if (line && line.indexOf('#') !== 0 && currentStreamInf) {
+      var variantUrl = line;
+      if (variantUrl.indexOf('http') !== 0) {
+        try {
+          variantUrl = new URL(variantUrl, masterUrl).toString();
+        } catch (_) {}
+      }
+
+      var resMatch = currentStreamInf.match(/RESOLUTION=(\d+)x(\d+)/i);
+      var width = resMatch ? parseInt(resMatch[1], 10) : 0;
+      var height = resMatch ? parseInt(resMatch[2], 10) : 0;
+
+      var bwMatch = currentStreamInf.match(/BANDWIDTH=(\d+)/i);
+      var bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+
+      var quality = '1080p';
+      if (height >= 1080 || width >= 1920) quality = '1080p';
+      else if (height >= 720 || width >= 1280) quality = '720p';
+      else if (height >= 480 || width >= 800) quality = '480p';
+      else if (height > 0) quality = height + 'p';
+
+      variants.push({
+        url: variantUrl,
+        quality: quality,
+        height: height,
+        width: width,
+        bandwidth: bandwidth
+      });
+      currentStreamInf = null;
+    }
+  }
+
+  return variants;
+}
+
 async function fetchByseStream(iframeUrl) {
   try {
     var m = iframeUrl.match(/\/e\/([a-zA-Z0-9]+)/i);
@@ -357,17 +401,52 @@ async function fetchByseStream(iframeUrl) {
     var decrypted = await decryptBysePlayback(data.playback);
     if (!decrypted || !decrypted.sources || !decrypted.sources.length) return null;
 
-    // Pick highest quality source (1080p -> 720p -> last available)
-    var primary = decrypted.sources.find(function(s) { return s.label === '1080p' || s.height >= 1080; })
-      || decrypted.sources.find(function(s) { return s.label === '720p' || s.height >= 720; })
-      || decrypted.sources[decrypted.sources.length - 1];
+    var results = [];
+    var seenUrls = Object.create(null);
 
-    return {
-      url: primary.url,
-      type: 'hls',
-      referer: origin + '/',
-      quality: primary.label || (primary.height ? `${primary.height}p` : '1080p')
-    };
+    for (var src of decrypted.sources) {
+      var masterUrl = src.url;
+      if (!masterUrl) continue;
+
+      try {
+        var mRes = await fetch(masterUrl, {
+          headers: {
+            'User-Agent': WORKING_HEADERS['User-Agent'],
+            'Referer': origin + '/'
+          }
+        });
+        if (mRes.ok) {
+          var mText = await mRes.text();
+          var variants = parseMasterVariants(mText, masterUrl);
+          if (variants && variants.length > 0) {
+            for (var v of variants) {
+              if (seenUrls[v.url]) continue;
+              seenUrls[v.url] = true;
+              results.push({
+                url: v.url,
+                type: 'hls',
+                referer: origin + '/',
+                quality: v.quality,
+                bandwidth: v.bandwidth
+              });
+            }
+          }
+        }
+      } catch (_) {}
+
+      // Fallback: If no direct child variants extracted, provide masterUrl
+      if (results.length === 0 && !seenUrls[masterUrl]) {
+        seenUrls[masterUrl] = true;
+        results.push({
+          url: masterUrl,
+          type: 'hls',
+          referer: origin + '/',
+          quality: src.label || (src.height ? `${src.height}p` : '1080p')
+        });
+      }
+    }
+
+    return results.length > 0 ? results : null;
   } catch (_) {
     return null;
   }
@@ -461,15 +540,15 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             };
           }
 
-          if (resolvedStream && resolvedStream.url && resolvedStream.type !== 'embed') {
+          var streamList = Array.isArray(resolvedStream) ? resolvedStream : (resolvedStream ? [resolvedStream] : []);
+          return streamList.filter(function(st) { return st && st.url && st.type !== 'embed'; }).map(function(st) {
             return {
-              stream: resolvedStream,
+              stream: st,
               pName: pName,
               dConf: dConf,
-              quality: resolvedStream.quality || quality
+              quality: st.quality || quality
             };
-          }
-          return null;
+          });
         } catch (_) {
           return null;
         }
@@ -479,7 +558,18 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     var allStreams = [];
     var seenUrls = Object.create(null);
 
-    for (var item of resolvedEntries) {
+    var flattened = [];
+    for (var res of resolvedEntries) {
+      if (Array.isArray(res)) {
+        for (var item of res) {
+          if (item && item.stream && item.stream.url) flattened.push(item);
+        }
+      } else if (res && res.stream && res.stream.url) {
+        flattened.push(res);
+      }
+    }
+
+    for (var item of flattened) {
       if (!item || !item.stream || !item.stream.url || seenUrls[item.stream.url]) continue;
       seenUrls[item.stream.url] = true;
 

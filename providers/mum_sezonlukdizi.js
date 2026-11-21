@@ -524,6 +524,44 @@ var require_sezonlukdizi = __commonJS({
         }
       });
     }
+    function parseMasterVariants(masterContent, masterUrl) {
+      var lines = masterContent.split(/\r?\n/);
+      var variants = [];
+      var currentStreamInf = null;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.indexOf("#EXT-X-STREAM-INF:") === 0) {
+          currentStreamInf = line;
+        } else if (line && line.indexOf("#") !== 0 && currentStreamInf) {
+          var variantUrl = line;
+          if (variantUrl.indexOf("http") !== 0) {
+            try {
+              variantUrl = new URL(variantUrl, masterUrl).toString();
+            } catch (_) {
+            }
+          }
+          var resMatch = currentStreamInf.match(/RESOLUTION=(\d+)x(\d+)/i);
+          var width = resMatch ? parseInt(resMatch[1], 10) : 0;
+          var height = resMatch ? parseInt(resMatch[2], 10) : 0;
+          var bwMatch = currentStreamInf.match(/BANDWIDTH=(\d+)/i);
+          var bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+          var quality = "1080p";
+          if (height >= 1080 || width >= 1920) quality = "1080p";
+          else if (height >= 720 || width >= 1280) quality = "720p";
+          else if (height >= 480 || width >= 800) quality = "480p";
+          else if (height > 0) quality = height + "p";
+          variants.push({
+            url: variantUrl,
+            quality,
+            height,
+            width,
+            bandwidth
+          });
+          currentStreamInf = null;
+        }
+      }
+      return variants;
+    }
     function fetchByseStream(iframeUrl) {
       return __async(this, null, function* () {
         try {
@@ -542,17 +580,48 @@ var require_sezonlukdizi = __commonJS({
           if (!data || !data.playback) return null;
           var decrypted = yield decryptBysePlayback(data.playback);
           if (!decrypted || !decrypted.sources || !decrypted.sources.length) return null;
-          var primary = decrypted.sources.find(function(s) {
-            return s.label === "1080p" || s.height >= 1080;
-          }) || decrypted.sources.find(function(s) {
-            return s.label === "720p" || s.height >= 720;
-          }) || decrypted.sources[decrypted.sources.length - 1];
-          return {
-            url: primary.url,
-            type: "hls",
-            referer: origin + "/",
-            quality: primary.label || (primary.height ? `${primary.height}p` : "1080p")
-          };
+          var results = [];
+          var seenUrls = /* @__PURE__ */ Object.create(null);
+          for (var src of decrypted.sources) {
+            var masterUrl = src.url;
+            if (!masterUrl) continue;
+            try {
+              var mRes = yield fetch(masterUrl, {
+                headers: {
+                  "User-Agent": WORKING_HEADERS["User-Agent"],
+                  "Referer": origin + "/"
+                }
+              });
+              if (mRes.ok) {
+                var mText = yield mRes.text();
+                var variants = parseMasterVariants(mText, masterUrl);
+                if (variants && variants.length > 0) {
+                  for (var v of variants) {
+                    if (seenUrls[v.url]) continue;
+                    seenUrls[v.url] = true;
+                    results.push({
+                      url: v.url,
+                      type: "hls",
+                      referer: origin + "/",
+                      quality: v.quality,
+                      bandwidth: v.bandwidth
+                    });
+                  }
+                }
+              }
+            } catch (_) {
+            }
+            if (results.length === 0 && !seenUrls[masterUrl]) {
+              seenUrls[masterUrl] = true;
+              results.push({
+                url: masterUrl,
+                type: "hls",
+                referer: origin + "/",
+                quality: src.label || (src.height ? `${src.height}p` : "1080p")
+              });
+            }
+          }
+          return results.length > 0 ? results : null;
         } catch (_) {
           return null;
         }
@@ -633,15 +702,17 @@ var require_sezonlukdizi = __commonJS({
                       referer: BASE_URL + "/"
                     };
                   }
-                  if (resolvedStream && resolvedStream.url && resolvedStream.type !== "embed") {
+                  var streamList = Array.isArray(resolvedStream) ? resolvedStream : resolvedStream ? [resolvedStream] : [];
+                  return streamList.filter(function(st) {
+                    return st && st.url && st.type !== "embed";
+                  }).map(function(st) {
                     return {
-                      stream: resolvedStream,
+                      stream: st,
                       pName,
                       dConf: dConf2,
-                      quality: resolvedStream.quality || quality
+                      quality: st.quality || quality
                     };
-                  }
-                  return null;
+                  });
                 } catch (_) {
                   return null;
                 }
@@ -650,7 +721,17 @@ var require_sezonlukdizi = __commonJS({
           );
           var allStreams = [];
           var seenUrls = /* @__PURE__ */ Object.create(null);
-          for (var item of resolvedEntries) {
+          var flattened = [];
+          for (var res of resolvedEntries) {
+            if (Array.isArray(res)) {
+              for (var item of res) {
+                if (item && item.stream && item.stream.url) flattened.push(item);
+              }
+            } else if (res && res.stream && res.stream.url) {
+              flattened.push(res);
+            }
+          }
+          for (var item of flattened) {
             if (!item || !item.stream || !item.stream.url || seenUrls[item.stream.url]) continue;
             seenUrls[item.stream.url] = true;
             var sHeaders = {

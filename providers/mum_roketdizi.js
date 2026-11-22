@@ -507,7 +507,7 @@ var require_roketdizi = __commonJS({
       }
       return _cfgReady;
     }
-    var PROVIDER_NAME = "RoketDizi";
+    var PROVIDER_NAME = "ROKET";
     var BASE_URL = "https://roketdizi.life";
     var TMDB_API_KEY = "500330721680edb6d5f7f12ba7cd9023";
     var WORKING_HEADERS = {
@@ -1445,7 +1445,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_roketdizi();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "roketdizi", "id": "mum_roketdizi", "name": "RoketDizi", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "roketdizi", "id": "mum_roketdizi", "name": "ROKET", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

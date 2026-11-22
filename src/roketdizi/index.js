@@ -39,7 +39,7 @@ function cfgReady() {
  * Türkçe Dublaj ve Türkçe Altyazılı HLS akışları sunar.
  */
 
-var PROVIDER_NAME = 'RoketDizi';
+var PROVIDER_NAME = 'ROKET';
 var BASE_URL = 'https://roketdizi.life';
 var TMDB_API_KEY = '500330721680edb6d5f7f12ba7cd9023';
 

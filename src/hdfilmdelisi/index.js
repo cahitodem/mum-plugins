@@ -227,8 +227,8 @@ function parseVixolitySubtitles(playlistText) {
 function toVixolityStream(url, subtitles, isSeries, sNum, eNum) {
     var tag = isSeries ? ('S' + (sNum || 1) + 'E' + (eNum || 1) + ' • [TR Dublaj & Altyazılı]') : '[TR Dublaj & Altyazılı]';
     return {
-        name: 'HDFilmDelisi',
-        title: '⌜ HDFilmDelisi ⌟ | Vixolity • ' + tag + ' (1080p HLS)',
+        name: 'HDFM',
+        title: '⌜ HDFM ⌟ | Vixolity • ' + tag + ' (1080p HLS)',
         url: url,
         quality: '1080p',
         provider: 'hdfilmdelisi',
@@ -248,8 +248,8 @@ function toStream(file, subtitles) {
             ? { 'User-Agent': HEADERS['User-Agent'], 'Referer': 'https://vidmody.com/' }
             : { 'User-Agent': HEADERS['User-Agent'], 'Referer': 'https://player.vidmody.com/' });
     return {
-        name: 'HDFilmDelisi',
-        title: '⌜ HDFilmDelisi ⌟ | 1080p HLS',
+        name: 'HDFM',
+        title: '⌜ HDFM ⌟ | 1080p HLS',
         url: file,
         quality: '1080p',
         provider: 'hdfilmdelisi',

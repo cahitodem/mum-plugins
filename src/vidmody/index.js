@@ -21,7 +21,7 @@ function cfgReady() {
  * ve Türkçe/İngilizce altyazılı 1080p HLS (.m3u8) akışları sunar.
  */
 
-var PROVIDER_NAME = 'Vidmody';
+var PROVIDER_NAME = 'VIDMODY';
 var BASE_URL = 'https://ha.vixolity.com';
 var TMDB_API_KEY  = '500330721680edb6d5f7f12ba7cd9023';
 
@@ -112,7 +112,7 @@ async function getStreams(tmdbId, mediaType, season, episode, options) {
 
         var targetUrl = '';
         var tag = isTV ? ('S' + sNum + 'E' + eNum + ' • [TR Dublaj & Altyazılı]') : '[TR Dublaj & Altyazılı]';
-        var streamTitle = '⌜ Vidmody ⌟ | Vixolity • ' + tag + ' (1080p HLS)';
+        var streamTitle = '⌜ VIDMODY ⌟ | Vixolity • ' + tag + ' (1080p HLS)';
 
         if (!isTV) {
             targetUrl = 'https://ha.vixolity.com/vs/' + imdbId;
@@ -135,7 +135,7 @@ async function getStreams(tmdbId, mediaType, season, episode, options) {
                 if (text.includes('#EXTM3U')) {
                     var subs = parseVixolitySubtitles(text);
                     return [{
-                        name: 'Vidmody',
+                        name: 'VIDMODY',
                         title: streamTitle,
                         url: targetUrl,
                         quality: '1080p',

@@ -25,7 +25,7 @@ function cfgReady() {
 
 var cheerio = require('cheerio-without-node-native');
 
-const PROVIDER_NAME = 'DiziYou';
+const PROVIDER_NAME = 'DYOU';
 var BASE_URL = 'https://www.diziyou.love'; 
 var STORAGE_URL = 'https://storage.diziyou.love';
 const TMDB_API_KEY = '500330721680edb6d5f7f12ba7cd9023';
@@ -301,7 +301,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
         const labelPart = task.label ? ' · ' + task.label : '';
         streams.push({
           name: displayTitle,
-          title: '⌜ DiziYou ⌟ | ' + displayTitle + labelPart + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm',
+          title: '⌜ DYOU ⌟ | ' + displayTitle + labelPart + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm',
           url: parsed.url,
           quality: 'HLS',
           type: 'hls',

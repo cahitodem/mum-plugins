@@ -518,7 +518,7 @@ var require_anthology_m3u = __commonJS({
       const isHlsStream = streamUrl.includes(".m3u8") || isVixolity;
       const obj = {
         name: streamName,
-        title: `\u231C Anthology M3U \u231F | ${sourceTag} [HD]`,
+        title: `\u231C ANTM3U \u231F | ${sourceTag} [HD]`,
         url: streamUrl,
         quality: sourceTag || "HD",
         format: isHlsStream ? "hls" : "mp4",
@@ -902,7 +902,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_anthology_m3u();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "anthology_m3u", "id": "mum_anthology_m3u", "name": "Anthology M3U", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "anthology_m3u", "id": "mum_anthology_m3u", "name": "ANTM3U", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

@@ -257,7 +257,7 @@ function buildStreamObject(streamName, sourceTag, streamUrl, score) {
     const isHlsStream = streamUrl.includes('.m3u8') || isVixolity;
     const obj = {
         name: streamName,
-        title: `⌜ Anthology M3U ⌟ | ${sourceTag} [HD]`,
+        title: `⌜ ANTM3U ⌟ | ${sourceTag} [HD]`,
         url: streamUrl,
         quality: sourceTag || 'HD',
         format: isHlsStream ? 'hls' : 'mp4',

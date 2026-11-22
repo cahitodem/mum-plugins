@@ -341,8 +341,8 @@ async function resolveVidmolyStreams(m3u8Url, langText, seenUrls, signal) {
             var fastHint = (qLabel === '720p' || qLabel === '480p') ? ' ⚡ Hızlı' : '';
 
             streams.push({
-                name: 'YabancıDizi',
-                title: '⌜ YabancıDizi ⌟ | VidMoly [' + qLabel + fastHint + ']' + langLabel,
+                name: 'YDZ',
+                title: '⌜ YDZ ⌟ | VidMoly [' + qLabel + fastHint + ']' + langLabel,
                 url: v.url,
                 quality: qLabel,
                 format: 'hls',
@@ -362,8 +362,8 @@ async function resolveVidmolyStreams(m3u8Url, langText, seenUrls, signal) {
     if (streams.length === 0 && !seenUrls.has(m3u8Url)) {
         seenUrls.add(m3u8Url);
         streams.push({
-            name: 'YabancıDizi',
-            title: '⌜ YabancıDizi ⌟ | VidMoly [1080p]' + langLabel,
+            name: 'YDZ',
+            title: '⌜ YDZ ⌟ | VidMoly [1080p]' + langLabel,
             url: m3u8Url,
             quality: '1080p',
             format: 'hls',

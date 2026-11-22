@@ -6,7 +6,7 @@
   "scrapers": [
     {
       "id": "mum_anthology_m3u",
-      "name": "Anthology M3U",
+      "name": "ANTM3U",
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_anthology_m3u.js",
@@ -18,7 +18,7 @@
     },
     {
       "id": "mum_diziyou",
-      "name": "DiziYou",
+      "name": "DYOU",
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_diziyou.js",
@@ -30,7 +30,7 @@
     },
     {
       "id": "mum_hdfilmdelisi",
-      "name": "HDFilmDelisi",
+      "name": "HDFM",
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_hdfilmdelisi.js",
@@ -42,7 +42,7 @@
     },
     {
       "id": "mum_sezonlukdizi",
-      "name": "SezonlukDizi",
+      "name": "SEZOND",
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_sezonlukdizi.js",
@@ -53,7 +53,7 @@
     },
     {
       "id": "mum_vidmody",
-      "name": "Vidmody",
+      "name": "VIDMODY",
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_vidmody.js",
@@ -65,7 +65,7 @@
     },
     {
       "id": "mum_yabancidizi",
-      "name": "YabancıDizi",
+      "name": "YDZ",
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_yabancidizi.js",
@@ -77,7 +77,7 @@
     },
     {
       "id": "mum_roketdizi",
-      "name": "RoketDizi",
+      "name": "ROKET",
       "version": "0.1.2",
       "author": "Anthology contributors; MUM contributors",
       "filename": "providers/mum_roketdizi.js",

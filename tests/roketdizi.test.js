@@ -298,8 +298,8 @@ test('RoketDizi: TV series stream resolution (multi-player dubbed & subtitled st
     assert.equal(subStream.subtitles[0].label, 'Türkçe');
 
     // Başlık ve meta veri doğrulaması
-    assert.match(dubStream.title, /⌜ RoketDizi ⌟ \| RoketTV \| 🇹🇷 Türkçe Dublaj · 1\. Sezon 1\. Bölüm/);
-    assert.match(subStream.title, /⌜ RoketDizi ⌟ \| RoketTV \| 🌐 Türkçe Altyazı · 1\. Sezon 1\. Bölüm/);
+    assert.match(dubStream.title, /⌜ ROKET ⌟ \| RoketTV \| 🇹🇷 Türkçe Dublaj · 1\. Sezon 1\. Bölüm/);
+    assert.match(subStream.title, /⌜ ROKET ⌟ \| RoketTV \| 🌐 Türkçe Altyazı · 1\. Sezon 1\. Bölüm/);
     assert.equal(dubStream.provider, 'roketdizi');
     assert.equal(subStream.provider, 'roketdizi');
 
@@ -394,7 +394,7 @@ test('RoketDizi: Movie stream resolution (/film/<slug>/izle) routes properly', a
     const streams = await roketdizi.getStreams('872585', 'movie');
     assert.equal(streams.length, 1, 'Film akışı başarıyla çözümlenmelidir');
     assert.equal(streams[0].url, 'https://pichive.biz/hls/oppenheimer/master.m3u8?p=93');
-    assert.match(streams[0].title, /⌜ RoketDizi ⌟ \| RoketTV \| 🇹🇷 Türkçe Dublaj$/);
+    assert.match(streams[0].title, /⌜ ROKET ⌟ \| RoketTV \| 🇹🇷 Türkçe Dublaj$/);
     assert.ok(!streams[0].title.includes('Sezon'), 'Film başlığında sezon/bölüm ifadesi olmamalıdır');
 
     // format ve isHls alanları (Nuvio HLS demuxer seçimi için zorunlu)

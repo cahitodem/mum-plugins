@@ -735,7 +735,7 @@ var require_diziyou = __commonJS({
               const labelPart = task.label ? " \xB7 " + task.label : "";
               streams.push({
                 name: displayTitle,
-                title: "\u231C DiziYou \u231F | " + displayTitle + labelPart + " \xB7 " + seasonNum + ". Sezon " + episodeNum + ". B\xF6l\xFCm",
+                title: "\u231C DYOU \u231F | " + displayTitle + labelPart + " \xB7 " + seasonNum + ". Sezon " + episodeNum + ". B\xF6l\xFCm",
                 url: parsed.url,
                 quality: "HLS",
                 type: "hls",
@@ -906,7 +906,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_diziyou();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "diziyou", "id": "mum_diziyou", "name": "DiziYou", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "empty", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "diziyou", "id": "mum_diziyou", "name": "DYOU", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "empty", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

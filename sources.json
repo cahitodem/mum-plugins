@@ -6,7 +6,7 @@
     {
       "key": "anthology_m3u",
       "id": "mum_anthology_m3u",
-      "name": "Anthology M3U",
+      "name": "ANTM3U",
       "supportedTypes": [
         "movie",
         "tv"
@@ -18,7 +18,7 @@
     {
       "key": "diziyou",
       "id": "mum_diziyou",
-      "name": "DiziYou",
+      "name": "DYOU",
       "supportedTypes": [
         "movie",
         "tv"
@@ -30,7 +30,7 @@
     {
       "key": "hdfilmdelisi",
       "id": "mum_hdfilmdelisi",
-      "name": "HDFilmDelisi",
+      "name": "HDFM",
       "supportedTypes": [
         "movie",
         "tv"
@@ -42,7 +42,7 @@
     {
       "key": "sezonlukdizi",
       "id": "mum_sezonlukdizi",
-      "name": "SezonlukDizi",
+      "name": "SEZOND",
       "supportedTypes": [
         "tv"
       ],
@@ -53,7 +53,7 @@
     {
       "key": "vidmody",
       "id": "mum_vidmody",
-      "name": "Vidmody",
+      "name": "VIDMODY",
       "supportedTypes": [
         "movie",
         "tv"
@@ -65,7 +65,7 @@
     {
       "key": "yabancidizi",
       "id": "mum_yabancidizi",
-      "name": "YabancıDizi",
+      "name": "YDZ",
       "supportedTypes": [
         "movie",
         "tv"
@@ -77,7 +77,7 @@
     {
       "key": "roketdizi",
       "id": "mum_roketdizi",
-      "name": "RoketDizi",
+      "name": "ROKET",
       "supportedTypes": [
         "movie",
         "tv"

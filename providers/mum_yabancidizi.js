@@ -777,8 +777,8 @@ var require_yabancidizi = __commonJS({
             var qLabel = v.quality || "1080p";
             var fastHint = qLabel === "720p" || qLabel === "480p" ? " \u26A1 H\u0131zl\u0131" : "";
             streams.push({
-              name: "Yabanc\u0131Dizi",
-              title: "\u231C Yabanc\u0131Dizi \u231F | VidMoly [" + qLabel + fastHint + "]" + langLabel,
+              name: "YDZ",
+              title: "\u231C YDZ \u231F | VidMoly [" + qLabel + fastHint + "]" + langLabel,
               url: v.url,
               quality: qLabel,
               format: "hls",
@@ -797,8 +797,8 @@ var require_yabancidizi = __commonJS({
         if (streams.length === 0 && !seenUrls.has(m3u8Url)) {
           seenUrls.add(m3u8Url);
           streams.push({
-            name: "Yabanc\u0131Dizi",
-            title: "\u231C Yabanc\u0131Dizi \u231F | VidMoly [1080p]" + langLabel,
+            name: "YDZ",
+            title: "\u231C YDZ \u231F | VidMoly [1080p]" + langLabel,
             url: m3u8Url,
             quality: "1080p",
             format: "hls",
@@ -1130,7 +1130,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_yabancidizi();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "yabancidizi", "id": "mum_yabancidizi", "name": "Yabanc\u0131Dizi", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "unverified", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "yabancidizi", "id": "mum_yabancidizi", "name": "YDZ", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "unverified", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

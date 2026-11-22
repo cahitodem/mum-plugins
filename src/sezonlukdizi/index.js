@@ -23,7 +23,7 @@ function cfgReady() {
  * Türkçe dublaj ve Türkçe altyazılı alternatif oynatıcı kaynaklarını sunar.
  */
 
-var PROVIDER_NAME = 'SezonlukDizi';
+var PROVIDER_NAME = 'SEZOND';
 var BASE_URL = 'https://sezonlukdizi.cc';
 var TMDB_API_KEY = '500330721680edb6d5f7f12ba7cd9023';
 

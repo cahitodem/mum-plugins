@@ -384,7 +384,7 @@ var require_vidmody = __commonJS({
           if (!imdbId || !imdbId.startsWith("tt")) return [];
           var targetUrl = "";
           var tag = isTV ? "S" + sNum + "E" + eNum + " \u2022 [TR Dublaj & Altyaz\u0131l\u0131]" : "[TR Dublaj & Altyaz\u0131l\u0131]";
-          var streamTitle = "\u231C Vidmody \u231F | Vixolity \u2022 " + tag + " (1080p HLS)";
+          var streamTitle = "\u231C VIDMODY \u231F | Vixolity \u2022 " + tag + " (1080p HLS)";
           if (!isTV) {
             targetUrl = "https://ha.vixolity.com/vs/" + imdbId;
             if (releaseYear) displayTitle += " (" + releaseYear + ")";
@@ -404,7 +404,7 @@ var require_vidmody = __commonJS({
               if (text.includes("#EXTM3U")) {
                 var subs = parseVixolitySubtitles(text);
                 return [{
-                  name: "Vidmody",
+                  name: "VIDMODY",
                   title: streamTitle,
                   url: targetUrl,
                   quality: "1080p",
@@ -584,7 +584,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_vidmody();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "vidmody", "id": "mum_vidmody", "name": "Vidmody", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "vidmody", "id": "mum_vidmody", "name": "VIDMODY", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

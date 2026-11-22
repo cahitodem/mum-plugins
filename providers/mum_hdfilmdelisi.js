@@ -680,8 +680,8 @@ var require_hdfilmdelisi = __commonJS({
     function toVixolityStream(url, subtitles, isSeries, sNum, eNum) {
       var tag = isSeries ? "S" + (sNum || 1) + "E" + (eNum || 1) + " \u2022 [TR Dublaj & Altyaz\u0131l\u0131]" : "[TR Dublaj & Altyaz\u0131l\u0131]";
       return {
-        name: "HDFilmDelisi",
-        title: "\u231C HDFilmDelisi \u231F | Vixolity \u2022 " + tag + " (1080p HLS)",
+        name: "HDFM",
+        title: "\u231C HDFM \u231F | Vixolity \u2022 " + tag + " (1080p HLS)",
         url,
         quality: "1080p",
         provider: "hdfilmdelisi",
@@ -696,8 +696,8 @@ var require_hdfilmdelisi = __commonJS({
       var isHls = /\.m3u8/i.test(file) || file.includes("vixolity.com/vs/") || file.includes("vidmody.com/vs/");
       var headers = file.includes("vixolity.com") ? VIXOLITY_HEADERS : isHls && file.includes("vidmody.com") ? { "User-Agent": HEADERS["User-Agent"], "Referer": "https://vidmody.com/" } : { "User-Agent": HEADERS["User-Agent"], "Referer": "https://player.vidmody.com/" };
       return {
-        name: "HDFilmDelisi",
-        title: "\u231C HDFilmDelisi \u231F | 1080p HLS",
+        name: "HDFM",
+        title: "\u231C HDFM \u231F | 1080p HLS",
         url: file,
         quality: "1080p",
         provider: "hdfilmdelisi",
@@ -1010,7 +1010,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_hdfilmdelisi();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "hdfilmdelisi", "id": "mum_hdfilmdelisi", "name": "HDFilmDelisi", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "hdfilmdelisi", "id": "mum_hdfilmdelisi", "name": "HDFM", "supportedTypes": ["movie", "tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

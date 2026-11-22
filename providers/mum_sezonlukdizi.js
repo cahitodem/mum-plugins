@@ -303,7 +303,7 @@ var require_sezonlukdizi = __commonJS({
       }
       return _cfgReady;
     }
-    var PROVIDER_NAME = "SezonlukDizi";
+    var PROVIDER_NAME = "SEZOND";
     var BASE_URL = "https://sezonlukdizi.cc";
     var TMDB_API_KEY = "500330721680edb6d5f7f12ba7cd9023";
     var WORKING_HEADERS = {
@@ -1070,7 +1070,7 @@ var require_adapter = __commonJS({
 // mum-entry.js
 var provider = require_sezonlukdizi();
 var { adapt } = require_adapter();
-module.exports = adapt(provider, { "key": "sezonlukdizi", "id": "mum_sezonlukdizi", "name": "SezonlukDizi", "supportedTypes": ["tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
+module.exports = adapt(provider, { "key": "sezonlukdizi", "id": "mum_sezonlukdizi", "name": "SEZOND", "supportedTypes": ["tv"], "enabled": true, "observation": "sources-found", "playback": "unverified" }, function(record) {
   globalThis.console.info("[MUM] " + JSON.stringify(record));
 });
 globalThis.getStreams = module.exports.getStreams;

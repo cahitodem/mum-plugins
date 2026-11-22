@@ -75,8 +75,51 @@ var require_quality = __commonJS({
         return getQualityScore(b) - getQualityScore(a);
       });
     }
+    function getResolutionScore(s) {
+      var score = getQualityScore(s);
+      return score % 2 === 1 ? score - 1 : score;
+    }
+    function getLanguageGroup(s) {
+      if (!s) return "default";
+      var text = ((s.title || "") + " " + (s.name || "")).toLowerCase();
+      if (text.includes("dublaj") || text.includes("\u{1F1F9}\u{1F1F7}")) return "dublaj";
+      if (text.includes("altyaz\u0131") || text.includes("altyazi") || text.includes("sub") || text.includes("\u{1F310}")) return "altyazi";
+      return "default";
+    }
+    function filterHighestQuality(streams) {
+      if (!Array.isArray(streams) || streams.length <= 1) return streams;
+      var groups = /* @__PURE__ */ Object.create(null);
+      for (var i = 0; i < streams.length; i++) {
+        var s = streams[i];
+        var grp = getLanguageGroup(s);
+        if (!groups[grp]) groups[grp] = [];
+        groups[grp].push(s);
+      }
+      var result = [];
+      var groupKeys = Object.keys(groups);
+      for (var k = 0; k < groupKeys.length; k++) {
+        var grpStreams = groups[groupKeys[k]];
+        var maxRes = 0;
+        for (var j = 0; j < grpStreams.length; j++) {
+          var res = getResolutionScore(grpStreams[j]);
+          if (res > maxRes) maxRes = res;
+        }
+        if (maxRes === 0) {
+          result = result.concat(grpStreams);
+        } else {
+          for (var j = 0; j < grpStreams.length; j++) {
+            if (getResolutionScore(grpStreams[j]) >= maxRes) {
+              result.push(grpStreams[j]);
+            }
+          }
+        }
+      }
+      return result;
+    }
     module2.exports = {
       getQualityScore,
+      getResolutionScore,
+      filterHighestQuality,
       sortStreamsByQuality
     };
   }
@@ -271,7 +314,7 @@ var require_errors = __commonJS({
 // src/sezonlukdizi/index.js
 var require_sezonlukdizi = __commonJS({
   "src/sezonlukdizi/index.js"(exports2, module2) {
-    var { sortStreamsByQuality } = require_quality();
+    var { sortStreamsByQuality, filterHighestQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
     var { fetchWithTimeout } = require_http();
     var { ProviderError } = require_errors();
@@ -687,7 +730,14 @@ var require_sezonlukdizi = __commonJS({
                 var mText = yield mRes.text();
                 var variants = parseMasterVariants(mText, masterUrl);
                 if (variants && variants.length > 0) {
-                  for (var v of variants) {
+                  variants.sort(function(a, b) {
+                    return (b.height || 0) - (a.height || 0) || (b.bandwidth || 0) - (a.bandwidth || 0);
+                  });
+                  var maxVariantHeight = variants[0].height || 0;
+                  var topVariants = maxVariantHeight > 0 ? variants.filter(function(v2) {
+                    return (v2.height || 0) >= maxVariantHeight;
+                  }) : variants.slice(0, 1);
+                  for (var v of topVariants) {
                     if (seenUrls[v.url]) continue;
                     seenUrls[v.url] = true;
                     results.push({
@@ -868,7 +918,8 @@ var require_sezonlukdizi = __commonJS({
       getStreams = function() {
         return __async(this, arguments, function* () {
           var res = yield _origGetStreams.apply(this, arguments);
-          return sortStreamsByQuality(res);
+          var sorted = sortStreamsByQuality(res);
+          return filterHighestQuality(sorted);
         });
       };
     }

@@ -1,26 +1,8 @@
-const { sortStreamsByQuality, getQualityScore } = require("../shared/quality.js");
+const { sortStreamsByQuality, getQualityScore, filterHighestQuality, getResolutionScore } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { fetchWithTimeout } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
 const { pickBestCandidate } = require("../shared/matching.js");
-
-function getResolutionScore(s) {
-    var score = getQualityScore(s);
-    return (score % 2 === 1) ? score - 1 : score;
-}
-
-function filterHighestQuality(streams) {
-    if (!Array.isArray(streams) || streams.length <= 1) return streams;
-    var maxRes = 0;
-    for (var i = 0; i < streams.length; i++) {
-        var res = getResolutionScore(streams[i]);
-        if (res > maxRes) maxRes = res;
-    }
-    if (maxRes === 0) return streams;
-    return streams.filter(function(s) {
-        return getResolutionScore(s) >= maxRes;
-    });
-}
 
 var _cfgReady = null;
 function cfgReady() {

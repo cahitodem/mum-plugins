@@ -1,5 +1,5 @@
 // MUM modification 2026-11-21. GPL-3.0-only; see LICENSE and NOTICE.md.
-const { sortStreamsByQuality } = require("../shared/quality.js");
+const { sortStreamsByQuality, filterHighestQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { fetchWithTimeout } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
@@ -438,7 +438,14 @@ async function fetchByseStream(iframeUrl, signal) {
           var mText = await mRes.text();
           var variants = parseMasterVariants(mText, masterUrl);
           if (variants && variants.length > 0) {
-            for (var v of variants) {
+            variants.sort(function(a, b) {
+              return (b.height || 0) - (a.height || 0) || (b.bandwidth || 0) - (a.bandwidth || 0);
+            });
+            var maxVariantHeight = variants[0].height || 0;
+            var topVariants = maxVariantHeight > 0
+              ? variants.filter(function(v) { return (v.height || 0) >= maxVariantHeight; })
+              : variants.slice(0, 1);
+            for (var v of topVariants) {
               if (seenUrls[v.url]) continue;
               seenUrls[v.url] = true;
               results.push({
@@ -633,12 +640,13 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
   }
 }
 
-// ── Universal Quality Sorter ──────────────────────────────────────────
+// ── Universal Quality Sorter & Highest Quality Filter ─────────────────
 if (typeof getStreams === "function") {
     var _origGetStreams = getStreams;
     getStreams = async function() {
         var res = await _origGetStreams.apply(this, arguments);
-        return sortStreamsByQuality(res);
+        var sorted = sortStreamsByQuality(res);
+        return filterHighestQuality(sorted);
     };
 }
 

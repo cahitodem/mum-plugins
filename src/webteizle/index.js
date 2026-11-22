@@ -2,6 +2,9 @@ const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { fetchWithTimeout } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
+const { pickBestCandidate, normalizeText } = require("../shared/matching.js");
+const { unpack } = require("../shared/unpacker.js");
+const { asciiFold, normalizeTurkish } = require("../shared/helpers.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -18,7 +21,7 @@ function cfgReady() {
 /**
  * Anthology - Webteİzle Provider
  * Webteizle.info üzerinden Türkçe dublaj ve Türkçe altyazılı
- * VidMoly 1080p master.m3u8 akışlarını doğrudan sunar.
+ * VidMoly, Sibnet ve FileMoon akışlarını optimize paralel resolver ile sunar.
  */
 
 var PROVIDER_NAME = 'Webteİzle';
@@ -32,125 +35,250 @@ var HEADERS = {
   'Referer': BASE_URL + '/'
 };
 
-// TMDB Verisi
+// ── In-Memory TTL Cache ────────────────────────────────────────────────
+var TMDB_CACHE = new Map();
+var PAGE_CACHE = new Map();
+var CACHE_TTL_TMDB = 24 * 60 * 60 * 1000; // 24 saat
+var CACHE_TTL_PAGE = 2 * 60 * 60 * 1000;  // 2 saat
+
+// ── Turnstile & Bot Korumalı Kilitli Hostlar ───────────────────────────
+var TURNSTILE_BLOCKED_HOSTS = ['pixel', 'netu', 'dzen'];
+
+// ── TMDB Verisi (In-Memory Cached) ────────────────────────────────────
 async function fetchTmdbInfo(tmdbId, mediaType, signal) {
   var cleanId = String(tmdbId || '').trim();
   if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
 
   var isTV = (mediaType === 'tv' || mediaType === 'series');
-  var endpoint = isTV ? 'tv' : 'movie';
-  var isImdb = cleanId.startsWith('tt');
+  var cacheKey = (isTV ? 'tv:' : 'movie:') + cleanId;
 
-  if (isImdb) {
-    var fRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', { signal }, 8000);
-    if (fRes.ok) {
-      var fData = await fRes.json();
-      var match = isTV ? (fData.tv_results && fData.tv_results[0]) : (fData.movie_results && fData.movie_results[0]);
-      if (match) {
-        return {
-          titleTr: match.title || match.name || '',
-          titleEn: match.original_title || match.original_name || '',
-          year: (match.release_date || match.first_air_date || '').slice(0, 4)
-        };
-      }
+  if (TMDB_CACHE.has(cacheKey)) {
+    var cached = TMDB_CACHE.get(cacheKey);
+    if (Date.now() - cached.time < CACHE_TTL_TMDB) {
+      return cached.data;
     }
   }
 
-  var res = await fetchWithTimeout('https://api.themoviedb.org/3/' + endpoint + '/' + cleanId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal }, 8000);
-  if (!res.ok) return { titleTr: '', titleEn: '', year: '' };
-  var d = await res.json();
-  return {
-    titleTr: d.title || d.name || '',
-    titleEn: d.original_title || d.original_name || '',
-    year: (d.release_date || d.first_air_date || '').slice(0, 4)
-  };
+  var endpoint = isTV ? 'tv' : 'movie';
+  var isImdb = cleanId.startsWith('tt');
+  var info = { titleTr: '', titleEn: '', year: '', numericId: '' };
+
+  if (isImdb) {
+    try {
+      var fRes = await fetchWithTimeout('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id&language=tr-TR', { signal: signal }, 5000);
+      if (fRes.ok) {
+        var fData = await fRes.json();
+        var match = isTV ? (fData.tv_results && fData.tv_results[0]) : (fData.movie_results && fData.movie_results[0]);
+        if (!match) match = (fData.movie_results && fData.movie_results[0]) || (fData.tv_results && fData.tv_results[0]);
+        if (match) {
+          info.titleTr = match.title || match.name || '';
+          info.titleEn = match.original_title || match.original_name || '';
+          info.year = (match.release_date || match.first_air_date || '').slice(0, 4);
+          info.numericId = match.id ? String(match.id) : '';
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (!info.titleTr && !info.titleEn) {
+    var lookupId = info.numericId || cleanId;
+    try {
+      var res = await fetchWithTimeout('https://api.themoviedb.org/3/' + endpoint + '/' + lookupId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal: signal }, 5000);
+      if (res.ok) {
+        var d = await res.json();
+        info.titleTr = d.title || d.name || '';
+        info.titleEn = d.original_title || d.original_name || '';
+        info.year = (d.release_date || d.first_air_date || '').slice(0, 4);
+        info.numericId = d.id ? String(d.id) : '';
+      }
+    } catch (_) {}
+  }
+
+  if (info.titleTr || info.titleEn) {
+    TMDB_CACHE.set(cacheKey, { data: info, time: Date.now() });
+  }
+  return info;
 }
 
-// Slug Dönüştürücü
+// ── Slug Dönüştürücü ──────────────────────────────────────────────────
 function titleToSlug(title) {
-  return (title || '').toLowerCase()
-    .replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ş/g, 's')
-    .replace(/ı/g, 'i').replace(/İ/g, 'i').replace(/ö/g, 'o').replace(/ç/g, 'c')
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!title) return '';
+  return asciiFold(String(title))
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
-// Sayfa Bulma
-async function findFilmPage(titleTr, titleEn, signal) {
-  var slugTr = titleToSlug(titleTr);
-  var slugEn = titleToSlug(titleEn);
+// ── Doğrulamalı Arama (matching.js) ───────────────────────────────────
+async function searchWithMatching(queryTitle, targetYear, isTV, signal) {
+  if (!queryTitle) return null;
+  try {
+    var r = await fetchWithTimeout(BASE_URL + '/ajax/arama.asp', {
+      method: 'POST',
+      headers: Object.assign({}, HEADERS, {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Origin': BASE_URL
+      }),
+      body: 'q=' + encodeURIComponent(queryTitle),
+      signal: signal
+    }, 4500);
 
-  var candidates = [];
+    if (r.status === 403) {
+      throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
+    }
+    if (!r.ok) return null;
+
+    var data = await r.json();
+    if (data.status !== 'success' || !data.results) return null;
+
+    var rawItems = [];
+    if (isTV) {
+      if (data.results.diziler && Array.isArray(data.results.diziler.results)) {
+        rawItems = data.results.diziler.results;
+      }
+    } else {
+      if (data.results.filmler && Array.isArray(data.results.filmler.results)) {
+        rawItems = data.results.filmler.results;
+      }
+    }
+
+    if (!rawItems.length) {
+      if (data.results.filmler && Array.isArray(data.results.filmler.results)) rawItems = rawItems.concat(data.results.filmler.results);
+      if (data.results.diziler && Array.isArray(data.results.diziler.results)) rawItems = rawItems.concat(data.results.diziler.results);
+    }
+
+    if (!rawItems.length) return null;
+
+    var candidates = rawItems.map(function (item) {
+      var itemUrl = item.url ? (item.url.startsWith('http') ? item.url : BASE_URL + item.url) : '';
+      var itemYear = (item.yil || item.year || '').toString();
+      return {
+        title: item.baslik || item.title || item.name || '',
+        url: itemUrl,
+        slug: item.url || '',
+        year: itemYear
+      };
+    }).filter(function (c) { return Boolean(c.url); });
+
+    var best = pickBestCandidate(candidates, queryTitle, targetYear);
+    if (!best) return null;
+
+    var pRes = await fetchWithTimeout(best.url, { headers: HEADERS, signal: signal }, 4500);
+    if (pRes.status === 403) {
+      throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
+    }
+    if (pRes.ok) {
+      var html = await pRes.text();
+      return { url: best.url, html: html };
+    }
+    return null;
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      throw e;
+    }
+    return null;
+  }
+}
+
+// ── Fast-Path Paralel Sayfa Bulucu ────────────────────────────────────
+async function findFilmPage(info, isTV, signal) {
+  var cacheKey = (isTV ? 'tv:' : 'movie:') + (info.numericId || info.titleTr || info.titleEn);
+  if (PAGE_CACHE.has(cacheKey)) {
+    var cached = PAGE_CACHE.get(cacheKey);
+    if (Date.now() - cached.time < CACHE_TTL_PAGE) {
+      return cached.data;
+    }
+  }
+
+  var slugTr = titleToSlug(info.titleTr);
+  var slugEn = titleToSlug(info.titleEn);
+
+  var directUrls = [];
   if (slugTr) {
-    candidates.push(BASE_URL + '/izle/dublaj/' + slugTr);
-    candidates.push(BASE_URL + '/izle/altyazi/' + slugTr);
+    if (isTV) {
+      directUrls.push(BASE_URL + '/dizi/' + slugTr);
+    } else {
+      directUrls.push(BASE_URL + '/izle/dublaj/' + slugTr);
+      directUrls.push(BASE_URL + '/izle/altyazi/' + slugTr);
+    }
   }
   if (slugEn && slugEn !== slugTr) {
-    candidates.push(BASE_URL + '/izle/dublaj/' + slugEn);
-    candidates.push(BASE_URL + '/izle/altyazi/' + slugEn);
+    if (isTV) {
+      directUrls.push(BASE_URL + '/dizi/' + slugEn);
+    } else {
+      directUrls.push(BASE_URL + '/izle/dublaj/' + slugEn);
+      directUrls.push(BASE_URL + '/izle/altyazi/' + slugEn);
+    }
   }
 
-  for (var url of candidates) {
+  var hadBlock = false;
+
+  // 1. Doğrudan slug denemelerini eşzamanlı (paralel) yap
+  var directResults = await Promise.all(directUrls.map(async function (url) {
     try {
-      var r = await fetchWithTimeout(url, { headers: HEADERS, signal }, 8000);
+      var r = await fetchWithTimeout(url, { headers: HEADERS, signal: signal }, 3500);
+      if (r.status === 403) {
+        hadBlock = true;
+        return null;
+      }
       if (r.ok) {
         var html = await r.text();
-        if (html.indexOf('data-id') !== -1 && html.indexOf('id="wip"') !== -1) {
+        if (html.indexOf('data-id') !== -1 || html.indexOf('id="wip"') !== -1 || (isTV && html.indexOf('/dizi/') !== -1)) {
           return { url: url, html: html };
         }
       }
     } catch (e) {
-      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
         throw e;
       }
+      if (e && e.code === 'HTTP_BLOCKED') {
+        hadBlock = true;
+      }
     }
+    return null;
+  }));
+
+  var directRes = directResults.find(Boolean) || null;
+  if (directRes) {
+    PAGE_CACHE.set(cacheKey, { data: directRes, time: Date.now() });
+    return directRes;
   }
 
-  return await searchFallback(titleTr, titleEn, signal);
-}
-
-// Arama Fallback
-async function searchFallback(titleTr, titleEn, signal) {
-  var queries = [titleTr, titleEn].filter(Boolean);
-  for (var query of queries) {
+  // 2. Arama motoru fallback
+  var queries = [info.titleTr, info.titleEn].filter(Boolean);
+  for (var q of queries) {
     try {
-      var r = await fetchWithTimeout(BASE_URL + '/ajax/arama.asp', {
-        method: 'POST',
-        headers: Object.assign({}, HEADERS, {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'X-Requested-With': 'XMLHttpRequest'
-        }),
-        body: 'q=' + encodeURIComponent(query),
-        signal: signal
-      }, 8000);
-      if (!r.ok) continue;
-      var data = await r.json();
-      if (data.status === 'success' && data.results && data.results.filmler && Array.isArray(data.results.filmler.results)) {
-        var items = data.results.filmler.results;
-        if (items.length > 0) {
-          var best = items[0];
-          var pageUrl = best.url.startsWith('http') ? best.url : BASE_URL + best.url;
-          var pRes = await fetchWithTimeout(pageUrl, { headers: HEADERS, signal }, 8000);
-          if (pRes.ok) {
-            var html = await pRes.text();
-            return { url: pageUrl, html: html };
-          }
-        }
+      var searchRes = await searchWithMatching(q, info.year, isTV, signal);
+      if (searchRes) {
+        PAGE_CACHE.set(cacheKey, { data: searchRes, time: Date.now() });
+        return searchRes;
       }
     } catch (e) {
-      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
         throw e;
+      }
+      if (e && e.code === 'HTTP_BLOCKED') {
+        hadBlock = true;
       }
     }
   }
+
+  if (hadBlock) {
+    throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
+  }
+
   return null;
 }
 
-// Parsers
+// ── HTML Parsers ──────────────────────────────────────────────────────
 function parseFilmId(html) {
   var m = html.match(/data-id="(\d+)"[^>]*id="wip"/)
        || html.match(/id="wip"[^>]*data-id="(\d+)"/)
        || html.match(/button[^>]+id="wip"[^>]+data-id="(\d+)"/)
-       || html.match(/data-id="(\d+)"/);
+       || html.match(/data-id="(\d+)"/)
+       || html.match(/data-filmid="(\d+)"/)
+       || html.match(/filmid\s*=\s*['"]?(\d+)['"]?/i);
   return m ? m[1] : null;
 }
 
@@ -158,11 +286,14 @@ function parseDilList(html, pageUrl) {
   var diller = [];
   if (html.indexOf('/izle/dublaj/') !== -1 || pageUrl.indexOf('/izle/dublaj/') !== -1) diller.push({ dil: '0', ad: 'TR Dublaj' });
   if (html.indexOf('/izle/altyazi/') !== -1 || pageUrl.indexOf('/izle/altyazi/') !== -1) diller.push({ dil: '1', ad: 'TR Altyazı' });
-  if (diller.length === 0) { diller.push({ dil: '0', ad: 'TR Dublaj' }); diller.push({ dil: '1', ad: 'TR Altyazı' }); }
+  if (diller.length === 0) {
+    diller.push({ dil: '0', ad: 'TR Dublaj' });
+    diller.push({ dil: '1', ad: 'TR Altyazı' });
+  }
   return diller;
 }
 
-// Alternatifleri Getir
+// ── Alternatifleri Getir ──────────────────────────────────────────────
 async function fetchAlternatifler(filmId, dil, seasonNum, episodeNum, signal) {
   var body = 'filmid=' + filmId + '&dil=' + dil + '&s=' + (seasonNum || '') + '&b=' + (episodeNum || '') + '&bot=0';
   try {
@@ -175,7 +306,11 @@ async function fetchAlternatifler(filmId, dil, seasonNum, episodeNum, signal) {
       }),
       body: body,
       signal: signal
-    }, 8000);
+    }, 4500);
+
+    if (r.status === 403) {
+      throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
+    }
     if (!r.ok) return [];
     var data = await r.json();
     return (data.status === 'success' && Array.isArray(data.data)) ? data.data : [];
@@ -187,7 +322,7 @@ async function fetchAlternatifler(filmId, dil, seasonNum, episodeNum, signal) {
   }
 }
 
-// Embed Çözücü
+// ── Embed Iframe Çözücü ───────────────────────────────────────────────
 async function fetchEmbedIframe(embedId, signal) {
   try {
     var r = await fetchWithTimeout(BASE_URL + '/ajax/dataEmbed.asp', {
@@ -199,19 +334,25 @@ async function fetchEmbedIframe(embedId, signal) {
       }),
       body: 'id=' + embedId,
       signal: signal
-    }, 8000);
+    }, 4500);
+
+    if (r.status === 403) {
+      throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
+    }
     if (!r.ok) return null;
+
     var html = await r.text();
     var m = html.match(/<iframe[^>]+src="([^"]+)"/i);
     if (m) return m[1];
-    var sm = html.match(/(vidmoly|okru|filemoon|dzen)\s*\(\s*'([^']+)'/i);
+
+    var sm = html.match(/(vidmoly|okru|filemoon|dzen|sibnet)\s*\(\s*'([^']+)'/i);
     if (sm) {
       var p = sm[1].toLowerCase();
       var vid = sm[2];
       if (p === 'vidmoly') return 'https://vidmoly.biz/embed-' + vid + '.html';
       if (p === 'okru') return 'https://odnoklassniki.ru/videoembed/' + vid;
       if (p === 'filemoon') return 'https://filemoon.sx/e/' + vid;
-      if (p === 'dzen') return 'https://dzen.ru/video/watch/' + vid;
+      if (p === 'sibnet') return 'https://video.sibnet.ru/shell.php?videoid=' + vid;
     }
     return null;
   } catch (e) {
@@ -222,10 +363,42 @@ async function fetchEmbedIframe(embedId, signal) {
   }
 }
 
-// VidMoly M3U8 Çekici
+// ── Sibnet MP4 Çözücü (Instant Playback / En Hızlı Akış) ───────────────
+async function fetchSibnetStream(iframeUrl, signal) {
+  try {
+    var fullUrl = iframeUrl.startsWith('//') ? 'https:' + iframeUrl : iframeUrl;
+    var r = await fetchWithTimeout(fullUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Referer': 'https://video.sibnet.ru/'
+      },
+      signal: signal
+    }, 4500);
+
+    if (!r.ok) return null;
+    var html = await r.text();
+
+    var m = html.match(/["'](\/shell\.php\?videoid=\d+)["']/i)
+         || html.match(/player\.src\(\s*\[\s*\{\s*src:\s*["']([^"']+)["']/i)
+         || html.match(/src:\s*["']([^"']+\.mp4[^"']*)["']/i);
+
+    if (m) {
+      var streamUrl = m[1].startsWith('http') ? m[1] : 'https://video.sibnet.ru' + m[1];
+      return { url: streamUrl, type: 'mp4', referer: 'https://video.sibnet.ru/' };
+    }
+    return null;
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      throw e;
+    }
+    return null;
+  }
+}
+
+// ── VidMoly M3U8 Çözücü (Unpacker Destekli) ───────────────────────────
 async function fetchVidMolyStream(iframeUrl, signal) {
   var fullUrl = iframeUrl.startsWith('//') ? 'https:' + iframeUrl : iframeUrl;
-  fullUrl = fullUrl.replace('vidmoly.to', 'vidmoly.biz').replace('vidmoly.net', 'vidmoly.biz');
+  fullUrl = fullUrl.replace('vidmoly.to', 'vidmoly.biz').replace('vidmoly.net', 'vidmoly.biz').replace('vidmoly.me', 'vidmoly.biz');
   try {
     var r = await fetchWithTimeout(fullUrl, { 
       headers: {
@@ -233,10 +406,21 @@ async function fetchVidMolyStream(iframeUrl, signal) {
         'Referer': BASE_URL + '/'
       },
       signal: signal
-    }, 8000);
+    }, 4500);
+
     if (!r.ok) return null;
     var html = await r.text();
+
     var m = html.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]/i);
+    if (!m && typeof unpack === 'function') {
+      try {
+        var unpacked = unpack(html);
+        if (unpacked) {
+          m = unpacked.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)['"]/i);
+        }
+      } catch (_) {}
+    }
+
     return m ? { url: m[1], type: 'hls', referer: 'https://vidmoly.biz/' } : null;
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
@@ -246,38 +430,120 @@ async function fetchVidMolyStream(iframeUrl, signal) {
   }
 }
 
-// Embed İşleyici
+// ── FileMoon / Byse Çözücü ────────────────────────────────────────────
+async function fetchFilemoonStream(iframeUrl, signal) {
+  try {
+    var fullUrl = iframeUrl.startsWith('//') ? 'https:' + iframeUrl : iframeUrl;
+    var r = await fetchWithTimeout(fullUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Referer': BASE_URL + '/'
+      },
+      signal: signal
+    }, 4500);
+
+    if (!r.ok) return null;
+    var html = await r.text();
+
+    var m = html.match(/(?:file|source|src)\s*:\s*['"](https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)['"]/i);
+    if (!m && typeof unpack === 'function') {
+      try {
+        var unpacked = unpack(html);
+        if (unpacked) {
+          m = unpacked.match(/(?:file|source|src)\s*:\s*['"](https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)['"]/i);
+        }
+      } catch (_) {}
+    }
+
+    return m ? { url: m[1], type: m[1].includes('.mp4') ? 'mp4' : 'hls', referer: fullUrl } : null;
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
+      throw e;
+    }
+    return null;
+  }
+}
+
+// ── Embed İşleyici ────────────────────────────────────────────────────
 async function processEmbed(embedData, dilAd, movieTitle, signal) {
   var baslik = (embedData.baslik || '').toLowerCase();
-  if (baslik === 'pixel' || baslik === 'netu') return null;
+  if (TURNSTILE_BLOCKED_HOSTS.some(function (h) { return baslik.includes(h); })) return null;
 
   var src = await fetchEmbedIframe(embedData.id, signal);
   if (!src) return null;
 
   var flag = dilAd.includes('Dublaj') ? '🇹🇷 ' : '🌐 ';
   var pName = (embedData.baslik || 'Kaynak');
-  if (src.indexOf('vidmoly') !== -1) pName = 'VidMoly';
-  else if (src.indexOf('sibnet') !== -1) pName = 'Sibnet';
-  else if (src.indexOf('filemoon') !== -1) pName = 'FileMoon';
-
   var q = embedData.kalite || '1080p';
 
-  if (src.indexOf('vidmoly') !== -1) {
-    var s = await fetchVidMolyStream(src, signal);
-    if (s) {
-      var sHeaders = {
+  // 1. Sibnet: Doğrudan MP4 (En Hızlı Başlatma)
+  if (src.indexOf('sibnet') !== -1) {
+    pName = 'Sibnet';
+    var sib = await fetchSibnetStream(src, signal);
+    if (sib) {
+      var sibHeaders = {
         'User-Agent': HEADERS['User-Agent'],
-        'Referer': s.referer
+        'Referer': sib.referer
       };
       return {
         name: movieTitle,
         title: '⌜ Webteİzle ⌟ | ' + pName + ' | ' + flag + dilAd,
-        url: s.url,
+        url: sib.url,
         quality: q,
-        headers: sHeaders,
+        format: 'mp4',
+        type: 'mp4',
+        headers: sibHeaders,
         behaviorHints: {
           notWebReady: true,
-          proxyHeaders: { request: sHeaders }
+          proxyHeaders: { request: sibHeaders }
+        },
+        provider: 'webteizle'
+      };
+    }
+  }
+
+  // 2. VidMoly: HLS Master Stream
+  if (src.indexOf('vidmoly') !== -1) {
+    pName = 'VidMoly';
+    var vm = await fetchVidMolyStream(src, signal);
+    if (vm) {
+      var vmHeaders = {
+        'User-Agent': HEADERS['User-Agent'],
+        'Referer': vm.referer
+      };
+      return {
+        name: movieTitle,
+        title: '⌜ Webteİzle ⌟ | ' + pName + ' | ' + flag + dilAd,
+        url: vm.url,
+        quality: q,
+        headers: vmHeaders,
+        behaviorHints: {
+          notWebReady: true,
+          proxyHeaders: { request: vmHeaders }
+        },
+        provider: 'webteizle'
+      };
+    }
+  }
+
+  // 3. FileMoon
+  if (src.indexOf('filemoon') !== -1 || src.indexOf('byse') !== -1) {
+    pName = 'FileMoon';
+    var fm = await fetchFilemoonStream(src, signal);
+    if (fm) {
+      var fmHeaders = {
+        'User-Agent': HEADERS['User-Agent'],
+        'Referer': fm.referer
+      };
+      return {
+        name: movieTitle,
+        title: '⌜ Webteİzle ⌟ | ' + pName + ' | ' + flag + dilAd,
+        url: fm.url,
+        quality: q,
+        headers: fmHeaders,
+        behaviorHints: {
+          notWebReady: true,
+          proxyHeaders: { request: fmHeaders }
         },
         provider: 'webteizle'
       };
@@ -287,7 +553,7 @@ async function processEmbed(embedData, dilAd, movieTitle, signal) {
   return null;
 }
 
-// Ana Fonksiyon
+// ── Ana Fonksiyon (getStreams) ────────────────────────────────────────
 async function getStreams(tmdbId, mediaType, season, episode, options) {
   const signal = options && options.signal;
   try {
@@ -306,7 +572,7 @@ async function getStreams(tmdbId, mediaType, season, episode, options) {
     var movieName = info.titleTr || info.titleEn;
     if (!movieName) return [];
 
-    var pageResult = await findFilmPage(info.titleTr, info.titleEn, signal);
+    var pageResult = await findFilmPage(info, isTV, signal);
     if (!pageResult || !pageResult.html) return [];
 
     var filmId = parseFilmId(pageResult.html);
@@ -315,13 +581,27 @@ async function getStreams(tmdbId, mediaType, season, episode, options) {
     var diller = parseDilList(pageResult.html, pageResult.url);
     var streams = [];
 
-    for (var d of diller) {
-      var embedList = await fetchAlternatifler(filmId, d.dil, season, episode, signal);
+    // İki dilin alternatiflerini paralel çek
+    var altResults = await Promise.all(diller.map(function (d) {
+      return fetchAlternatifler(filmId, d.dil, season, episode, signal).then(function (embedList) {
+        return { dil: d, embedList: embedList };
+      });
+    }));
+
+    // Bounded Concurrency ile embedleri paralel çöz
+    var tasks = [];
+    for (var res of altResults) {
+      var d = res.dil;
+      var embedList = res.embedList || [];
       for (var e of embedList) {
-        var s = await processEmbed(e, d.ad, movieName, signal);
-        if (s && !streams.some(x => x.url === s.url)) {
-          streams.push(s);
-        }
+        tasks.push(processEmbed(e, d.ad, movieName, signal));
+      }
+    }
+
+    var resolvedStreams = await Promise.all(tasks);
+    for (var s of resolvedStreams) {
+      if (s && !streams.some(function (x) { return x.url === s.url; })) {
+        streams.push(s);
       }
     }
 
@@ -330,7 +610,6 @@ async function getStreams(tmdbId, mediaType, season, episode, options) {
     if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT' || err.name === 'ProviderError' || (signal && signal.aborted))) {
       throw err;
     }
-    console.error('[Webteİzle] Hata:', err.message);
     return [];
   }
 }
@@ -338,7 +617,7 @@ async function getStreams(tmdbId, mediaType, season, episode, options) {
 // ── Universal Quality Sorter ──────────────────────────────────────────
 if (typeof getStreams === "function") {
     var _origGetStreams = getStreams;
-    getStreams = async function() {
+    getStreams = async function () {
         var res = await _origGetStreams.apply(this, arguments);
         return sortStreamsByQuality(res);
     };

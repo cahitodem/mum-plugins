@@ -776,7 +776,7 @@ var require_roketdizi = __commonJS({
       var CJS = getCryptoJS();
       if (CJS && CJS.SHA256) {
         try {
-          for (var i = 0; i <= 1e4; i++) {
+          for (var i = 0; i <= 1e5; i++) {
             var hashWa = CJS.SHA256(i + "|" + cmiy + "|" + nonce);
             if (hashWa && hashWa.words && hashWa.words[5] >>> 20 === 0) {
               return String(i);
@@ -787,7 +787,7 @@ var require_roketdizi = __commonJS({
       }
       if (_nodeCrypto && typeof Buffer !== "undefined") {
         try {
-          for (var j = 0; j <= 1e4; j++) {
+          for (var j = 0; j <= 1e5; j++) {
             var hash = _nodeCrypto.createHash("sha256").update(j + "|" + cmiy + "|" + nonce).digest();
             if (hash.readUInt32BE(20) >>> 20 === 0) {
               return j.toString();
@@ -798,8 +798,15 @@ var require_roketdizi = __commonJS({
       }
       return null;
     }
-    function parseNpGate(html) {
+    function parseNpGate(html, config) {
+      if (config && config.gate && config.gate.n) {
+        return config.gate;
+      }
       if (!html) return null;
+      var gateMatch = html.match(/"gate"\s*:\s*\{\s*"n"\s*:\s*"([a-zA-Z0-9_-]+)"/i);
+      if (gateMatch) {
+        return { n: gateMatch[1] };
+      }
       var match = html.match(/(?:window\.)?NP_GATE\s*=\s*({[\s\S]*?});/i);
       if (match) {
         try {
@@ -816,7 +823,7 @@ var require_roketdizi = __commonJS({
           }
         }
       }
-      var nMatch = html.match(/(?:window\.)?NP_GATE[\s\S]*?["']?n["']?\s*:\s*["']?([a-zA-Z0-9_-]+)["']?/i);
+      var nMatch = html.match(/(?:window\.)?NP_GATE[\s\S]*?["']?n["']?\s*:\s*["']?([a-zA-Z0-9_-]+)["']?/i) || html.match(/["']?n["']?\s*:\s*["']([a-zA-Z0-9_-]+)["']/i);
       if (nMatch) {
         return { n: nMatch[1] };
       }
@@ -824,7 +831,7 @@ var require_roketdizi = __commonJS({
     }
     function parseNpConfig(html) {
       if (!html) return null;
-      var match = html.match(/(?:window\.)?NP_CONFIG\s*=\s*({[\s\S]*?});/i);
+      var match = html.match(/(?:window\.)?NP_CONFIG\s*=\s*(\{[\s\S]*?\});(?:\s*window|\s*<|\s*$)/i) || html.match(/(?:window\.)?NP_CONFIG\s*=\s*(\{[\s\S]*?\});/i);
       if (match) {
         try {
           return JSON.parse(match[1]);
@@ -848,6 +855,7 @@ var require_roketdizi = __commonJS({
     }
     function appendSolution(url, solution) {
       if (!url || !solution) return url;
+      if (/[?&]p=/.test(url)) return url;
       var sep = url.indexOf("?") >= 0 ? "&" : "?";
       return url + sep + "p=" + solution;
     }
@@ -867,26 +875,6 @@ var require_roketdizi = __commonJS({
         if (!/^https?:\/\//i.test(normalizedIframeUrl)) return null;
         var langFlag = isDublaj ? "\u{1F1F9}\u{1F1F7} T\xFCrk\xE7e Dublaj" : "\u{1F310} T\xFCrk\xE7e Altyaz\u0131";
         var streamTitle = mediaType === "movie" ? "\u231C " + PROVIDER_NAME + " \u231F | RoketTV | " + langFlag : "\u231C " + PROVIDER_NAME + " \u231F | RoketTV | " + langFlag + " \xB7 " + seasonNum + ". Sezon " + episodeNum + ". B\xF6l\xFCm";
-        var fallbackHeaders = {
-          "User-Agent": WORKING_HEADERS["User-Agent"],
-          "Referer": BASE_URL + "/"
-        };
-        function createFallbackStream() {
-          return {
-            name: displayName,
-            title: streamTitle,
-            url: normalizedIframeUrl,
-            quality: qualityLabel || "1080p",
-            type: "hls",
-            headers: fallbackHeaders,
-            behaviorHints: {
-              notWebReady: true,
-              proxyHeaders: { request: fallbackHeaders }
-            },
-            subtitles: [],
-            provider: "roketdizi"
-          };
-        }
         if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(normalizedIframeUrl)) {
           var isDirectMp4 = normalizedIframeUrl.includes(".mp4");
           var dHeaders = {
@@ -918,40 +906,49 @@ var require_roketdizi = __commonJS({
             signal
           }, 7e3);
           if (!res.ok) {
-            return createFallbackStream();
+            return null;
           }
           var iframeHtml = yield res.text();
-          var gate = parseNpGate(iframeHtml);
-          var solution = solveNpGate(gate);
           var config = parseNpConfig(iframeHtml);
+          var gate = parseNpGate(iframeHtml, config);
+          var solution = solveNpGate(gate);
           var streamUrl = "";
           var tracks = [];
           if (config) {
             if (typeof config.file === "string") {
               streamUrl = config.file;
             } else if (Array.isArray(config.sources) && config.sources.length > 0) {
-              streamUrl = config.sources[0].file || config.sources[0].src || config.sources[0].url || "";
+              for (var s = 0; s < config.sources.length; s++) {
+                var srcObj = config.sources[s];
+                if (srcObj) {
+                  var candidateUrl = srcObj.master || srcObj.file || srcObj.src || srcObj.url || "";
+                  if (candidateUrl) {
+                    streamUrl = candidateUrl;
+                    break;
+                  }
+                }
+              }
             } else if (typeof config.stream === "string") {
               streamUrl = config.stream;
             } else if (typeof config.url === "string") {
               streamUrl = config.url;
             }
-            if (Array.isArray(config.tracks)) {
-              tracks = config.tracks;
-            } else if (Array.isArray(config.subtitles)) {
+            if (Array.isArray(config.subtitles)) {
               tracks = config.subtitles;
+            } else if (Array.isArray(config.tracks)) {
+              tracks = config.tracks;
             }
           }
           if (!streamUrl) {
-            var m3u8Match = iframeHtml.match(/["'](https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)["']/i);
+            var m3u8Match = iframeHtml.match(/["'](https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)["']/i) || iframeHtml.match(/["'](https?:\/\/[^"'\s]+\/nm\.php\?v=[^"'\s]*)["']/i);
             if (m3u8Match) streamUrl = m3u8Match[1];
           }
           if (!streamUrl) {
-            return createFallbackStream();
+            return null;
           }
           streamUrl = toAbsoluteUrl(streamUrl, normalizedIframeUrl);
           if (!/^https?:\/\//i.test(streamUrl)) {
-            return createFallbackStream();
+            return null;
           }
           var finalStreamUrl = appendSolution(streamUrl, solution);
           var subtitles = [];
@@ -963,7 +960,7 @@ var require_roketdizi = __commonJS({
               if (/^https?:\/\//i.test(fullSubUrl)) {
                 subtitles.push({
                   url: appendSolution(fullSubUrl, solution),
-                  language: t.srclang || t.language || t.label || "tr",
+                  language: t.srclang || t.language || t.lang || t.label || "tr",
                   label: t.label || t.title || "T\xFCrk\xE7e"
                 });
               }
@@ -1005,7 +1002,7 @@ var require_roketdizi = __commonJS({
           };
         } catch (err) {
           if (err && (err.name === "AbortError" || err.message === "TIMEOUT")) throw err;
-          return createFallbackStream();
+          return null;
         }
       });
     }

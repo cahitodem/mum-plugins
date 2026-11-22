@@ -340,7 +340,7 @@ function solveNpGate(gate) {
   var CJS = getCryptoJS();
   if (CJS && CJS.SHA256) {
     try {
-      for (var i = 0; i <= 10000; i++) {
+      for (var i = 0; i <= 100000; i++) {
         var hashWa = CJS.SHA256(i + '|' + cmiy + '|' + nonce);
         if (hashWa && hashWa.words && (hashWa.words[5] >>> 20) === 0) {
           return String(i);
@@ -352,7 +352,7 @@ function solveNpGate(gate) {
   // 2. Node.js ortamı: crypto.createHash
   if (_nodeCrypto && typeof Buffer !== 'undefined') {
     try {
-      for (var j = 0; j <= 10000; j++) {
+      for (var j = 0; j <= 100000; j++) {
         var hash = _nodeCrypto.createHash('sha256').update(j + '|' + cmiy + '|' + nonce).digest();
         if ((hash.readUInt32BE(20) >>> 20) === 0) {
           return j.toString();
@@ -364,8 +364,15 @@ function solveNpGate(gate) {
   return null;
 }
 
-function parseNpGate(html) {
+function parseNpGate(html, config) {
+  if (config && config.gate && config.gate.n) {
+    return config.gate;
+  }
   if (!html) return null;
+  var gateMatch = html.match(/"gate"\s*:\s*\{\s*"n"\s*:\s*"([a-zA-Z0-9_-]+)"/i);
+  if (gateMatch) {
+    return { n: gateMatch[1] };
+  }
   var match = html.match(/(?:window\.)?NP_GATE\s*=\s*({[\s\S]*?});/i);
   if (match) {
     try {
@@ -379,7 +386,8 @@ function parseNpGate(html) {
       }
     }
   }
-  var nMatch = html.match(/(?:window\.)?NP_GATE[\s\S]*?["']?n["']?\s*:\s*["']?([a-zA-Z0-9_-]+)["']?/i);
+  var nMatch = html.match(/(?:window\.)?NP_GATE[\s\S]*?["']?n["']?\s*:\s*["']?([a-zA-Z0-9_-]+)["']?/i) ||
+               html.match(/["']?n["']?\s*:\s*["']([a-zA-Z0-9_-]+)["']/i);
   if (nMatch) {
     return { n: nMatch[1] };
   }
@@ -388,7 +396,8 @@ function parseNpGate(html) {
 
 function parseNpConfig(html) {
   if (!html) return null;
-  var match = html.match(/(?:window\.)?NP_CONFIG\s*=\s*({[\s\S]*?});/i);
+  var match = html.match(/(?:window\.)?NP_CONFIG\s*=\s*(\{[\s\S]*?\});(?:\s*window|\s*<|\s*$)/i) ||
+              html.match(/(?:window\.)?NP_CONFIG\s*=\s*(\{[\s\S]*?\});/i);
   if (match) {
     try {
       return JSON.parse(match[1]);
@@ -410,6 +419,7 @@ function parseNpConfig(html) {
 
 function appendSolution(url, solution) {
   if (!url || !solution) return url;
+  if (/[?&]p=/.test(url)) return url;
   var sep = url.indexOf('?') >= 0 ? '&' : '?';
   return url + sep + 'p=' + solution;
 }
@@ -434,28 +444,6 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
   var streamTitle = (mediaType === 'movie')
     ? '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + langFlag
     : '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + langFlag + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm';
-
-  var fallbackHeaders = {
-    'User-Agent': WORKING_HEADERS['User-Agent'],
-    'Referer': BASE_URL + '/'
-  };
-
-  function createFallbackStream() {
-    return {
-      name: displayName,
-      title: streamTitle,
-      url: normalizedIframeUrl,
-      quality: qualityLabel || '1080p',
-      type: 'hls',
-      headers: fallbackHeaders,
-      behaviorHints: {
-        notWebReady: true,
-        proxyHeaders: { request: fallbackHeaders }
-      },
-      subtitles: [],
-      provider: 'roketdizi'
-    };
-  }
 
   // Doğrudan video akışı verilmişse doğrudan nesneyi oluştur
   if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(normalizedIframeUrl)) {
@@ -492,20 +480,19 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
       signal: signal
     }, 7000);
 
-    // Eğer 403 dönerse (Cloudflare bot koruması) veya ok değilse:
-    // KESİNLİKLE HTTP_BLOCKED fırlatmayın! Deşifre edilmiş iframe URL fallback döndürün.
     if (!res.ok) {
-      return createFallbackStream();
+      return null;
     }
 
     var iframeHtml = await res.text();
 
-    // NP_GATE PoW çözümle
-    var gate = parseNpGate(iframeHtml);
-    var solution = solveNpGate(gate);
-
     // NP_CONFIG ayrıştır
     var config = parseNpConfig(iframeHtml);
+
+    // NP_GATE PoW çözümle
+    var gate = parseNpGate(iframeHtml, config);
+    var solution = solveNpGate(gate);
+
     var streamUrl = '';
     var tracks = [];
 
@@ -513,32 +500,42 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
       if (typeof config.file === 'string') {
         streamUrl = config.file;
       } else if (Array.isArray(config.sources) && config.sources.length > 0) {
-        streamUrl = config.sources[0].file || config.sources[0].src || config.sources[0].url || '';
+        for (var s = 0; s < config.sources.length; s++) {
+          var srcObj = config.sources[s];
+          if (srcObj) {
+            var candidateUrl = srcObj.master || srcObj.file || srcObj.src || srcObj.url || '';
+            if (candidateUrl) {
+              streamUrl = candidateUrl;
+              break;
+            }
+          }
+        }
       } else if (typeof config.stream === 'string') {
         streamUrl = config.stream;
       } else if (typeof config.url === 'string') {
         streamUrl = config.url;
       }
-      if (Array.isArray(config.tracks)) {
-        tracks = config.tracks;
-      } else if (Array.isArray(config.subtitles)) {
+      if (Array.isArray(config.subtitles)) {
         tracks = config.subtitles;
+      } else if (Array.isArray(config.tracks)) {
+        tracks = config.tracks;
       }
     }
 
-    // Fallback: Regex ile streamUrl ve altyazı ara
+    // Fallback: Regex ile streamUrl ara
     if (!streamUrl) {
-      var m3u8Match = iframeHtml.match(/["'](https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)["']/i);
+      var m3u8Match = iframeHtml.match(/["'](https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)["']/i) ||
+                      iframeHtml.match(/["'](https?:\/\/[^"'\s]+\/nm\.php\?v=[^"'\s]*)["']/i);
       if (m3u8Match) streamUrl = m3u8Match[1];
     }
 
     if (!streamUrl) {
-      return createFallbackStream();
+      return null;
     }
 
     streamUrl = toAbsoluteUrl(streamUrl, normalizedIframeUrl);
     if (!/^https?:\/\//i.test(streamUrl)) {
-      return createFallbackStream();
+      return null;
     }
 
     // PoW çözümünü akış URL'sine ekle
@@ -554,7 +551,7 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
         if (/^https?:\/\//i.test(fullSubUrl)) {
           subtitles.push({
             url: appendSolution(fullSubUrl, solution),
-            language: t.srclang || t.language || t.label || 'tr',
+            language: t.srclang || t.language || t.lang || t.label || 'tr',
             label: t.label || t.title || 'Türkçe'
           });
         }
@@ -599,7 +596,7 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
     };
   } catch (err) {
     if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT')) throw err;
-    return createFallbackStream();
+    return null;
   }
 }
 

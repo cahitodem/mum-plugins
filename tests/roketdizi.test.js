@@ -830,16 +830,31 @@ test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR 
       };
     }
 
-    // 5. Pichive Iframe: Bölüm 1 için 403 Forbidden (Cloudflare Bot Engeli)
+    // 5. Pichive Iframe: Bölüm 1 için gerçek Pichive HTML formatı (NP_CONFIG.gate + sources[0].master + subtitles)
     if (u === 'https://four.pichive.online/iframe.php?v=friend_ep1') {
       return {
-        ok: false,
-        status: 403,
-        statusText: 'Forbidden (Cloudflare Bot Protection)'
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <script>
+              window.NP_GATE = function(_kq, _uvu) {};
+              window.NP_CONFIG = {
+                "gate": { "n": "testnonce_7", "b": 12 },
+                "sources": [
+                  { "title": "Orijinal", "kind": "orig", "master": "https://four.pichive.online/nm.php?v=friend_ep1_master" }
+                ],
+                "subtitles": [
+                  { "label": "Türkçe", "lang": "tr", "forced": false, "url": "https://four.pichive.online/nsub.php?v=sub_ep1" }
+                ]
+              };
+            </script>
+          </html>
+        `
       };
     }
 
-    // 6. Pichive Iframe: Bölüm 2 için 200 OK + NP_GATE PoW & NP_CONFIG
+    // 6. Pichive Iframe: Bölüm 2 için 200 OK + legacy NP_GATE PoW & NP_CONFIG.file
     if (u === 'https://four.pichive.online/iframe.php?v=friend_ep2') {
       return {
         ok: true,
@@ -867,13 +882,16 @@ test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR 
   global.fetch = fetchMock;
 
   try {
-    // A. Bölüm 1 Testi: Pichive 403 döndüğünde ProviderError fırlatılmamalı, doğrudan iframe fallback yayını dönmeli
+    // A. Bölüm 1 Testi: Pichive NP_CONFIG.gate + sources[0].master çözümlenmeli ve p parametresi eklenmeli
     const streamsEp1 = await roketdizi.getStreams('315755', 'tv', 1, 1);
-    assert.equal(streamsEp1.length, 1, '403 durumunda deşifre edilmiş iframe adresi fallback olarak dönmeli');
-    assert.equal(streamsEp1[0].url, 'https://four.pichive.online/iframe.php?v=friend_ep1');
+    assert.equal(streamsEp1.length, 1, 'Bölüm 1 için geçerli PoW çözümlü master HLS akışı dönmeli');
+    assert.equal(streamsEp1[0].url, 'https://four.pichive.online/nm.php?v=friend_ep1_master&p=93');
     assert.equal(streamsEp1[0].type, 'hls');
     assert.equal(streamsEp1[0].provider, 'roketdizi');
-    assert.equal(streamsEp1[0].headers.Referer, 'https://roketdizi.life/');
+    assert.equal(streamsEp1[0].headers.Referer, 'https://four.pichive.online/iframe.php?v=friend_ep1');
+    assert.equal(streamsEp1[0].subtitles.length, 1);
+    assert.equal(streamsEp1[0].subtitles[0].url, 'https://four.pichive.online/nsub.php?v=sub_ep1&p=93');
+    assert.equal(streamsEp1[0].subtitles[0].language, 'tr');
 
     // B. Bölüm 2 Testi: Pichive 200 döndüğünde PoW çözülüp m3u8 adresi çözümlenmeli
     const streamsEp2 = await roketdizi.getStreams('315755', 'tv', 1, 2);
@@ -886,12 +904,12 @@ test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR 
     global.fetch = originalFetch;
   }
 
-  // C. Bundled Adapter Testi: Bundle VM içinde 403 iframe fallback'in başarıyla sources-found üretmesi
-  // Önce bundle'ı derleyelim ve yükleyelim
+  // C. Bundled Adapter Testi: Bundle VM içinde master HLS akışının başarıyla sources-found üretmesi
   const { provider, reports } = loadBundle(fetchMock);
   const bundledStreams = await provider.getStreams('315755', 'tv', 1, 1);
   assert.equal(bundledStreams.length, 1);
-  assert.equal(bundledStreams[0].url, 'https://four.pichive.online/iframe.php?v=friend_ep1');
+  assert.equal(bundledStreams[0].url, 'https://four.pichive.online/nm.php?v=friend_ep1_master&p=93');
+  assert.equal(bundledStreams[0].type, 'hls');
   const lastReport = reports.map(r => {
     try { return JSON.parse(r.replace(/^\[MUM\]\s*/, '')); } catch (_) { return null; }
   }).filter(Boolean).at(-1);
@@ -1113,4 +1131,94 @@ test('RoketDizi: QuickJS / Nuvio runtime compatibility without Buffer and Node c
   assert.ok(lastReport, 'Adapter en az bir rapor üretmelidir');
   assert.equal(lastReport.status, 'sources-found');
   assert.equal(lastReport.count, 1);
+});
+
+// ── 13. TV Dizisi Mother, May I Murder? (TMDB 231824) Pichive Master HLS Çözümlemesi ──
+
+test('RoketDizi: TV series Mother, May I Murder? (TMDB 231824) resolves master HLS with PoW solution and subtitles', async () => {
+  const encMother = createEncPayload('https://four.pichive.online/iframe.php?v=79f07771eb20efa14a7438814fe82b9c', 'mother_secret_key');
+
+  const fetchMock = async (url) => {
+    const u = String(url);
+    if (u.includes('api.themoviedb.org/3/tv/231824') || u.includes('api.themoviedb.org/3/find/231824')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 231824,
+          name: 'Mother, May I Murder?',
+          original_name: 'Mother, May I Murder?',
+          first_air_date: '2023-07-31'
+        })
+      };
+    }
+    if (u.includes('/arama-yap?s=')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <div class="search-results">
+            <a href="/dizi/mother-may-i-murder" aria-label="Mother, May I Murder?, 2023">Mother, May I Murder?</a>
+          </div>
+        `
+      };
+    }
+    if (u === 'https://roketdizi.life/dizi/mother-may-i-murder/sezon-1/bolum-1') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <body>
+              <script>
+                self.__next_f.push([1,"{\\"sources\\":[{\\"label\\":\\"RoketTV · Türkçe Altyazı\\",\\"quality\\":\\"1080P\\",\\"href\\":\\"/dizi/mother-may-i-murder/sezon-1/bolum-1\\",\\"on\\":true,\\"dub\\":false}],\\"enc\\":{\\"ciphertext\\":\\"${encMother.ciphertext}\\",\\"iv\\":\\"${encMother.iv}\\",\\"salt\\":\\"${encMother.salt}\\"},\\"k\\":\\"${encMother.k}\\"}"]);
+              </script>
+            </body>
+          </html>
+        `
+      };
+    }
+    if (u === 'https://four.pichive.online/iframe.php?v=79f07771eb20efa14a7438814fe82b9c') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <script>
+              window.NP_GATE = function(_kq, _uvu) {};
+              window.NP_CONFIG = {
+                "gate": { "n": "testnonce_7", "b": 12 },
+                "sources": [
+                  { "title": "Orijinal", "kind": "orig", "master": "https://four.pichive.online/nm.php?v=mother_master_m3u8" }
+                ],
+                "subtitles": [
+                  { "label": "Türkçe", "lang": "tr", "forced": false, "url": "https://four.pichive.online/nsub.php?v=sub_tr" },
+                  { "label": "İngilizce", "lang": "en", "forced": false, "url": "https://four.pichive.online/nsub.php?v=sub_en" }
+                ]
+              };
+            </script>
+          </html>
+        `
+      };
+    }
+    throw new Error('Unexpected URL in Test 13: ' + u);
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = fetchMock;
+
+  try {
+    const streams = await roketdizi.getStreams('231824', 'tv', 1, 1);
+    assert.ok(Array.isArray(streams));
+    assert.equal(streams.length, 1);
+    assert.equal(streams[0].url, 'https://four.pichive.online/nm.php?v=mother_master_m3u8&p=93');
+    assert.equal(streams[0].type, 'hls');
+    assert.equal(streams[0].subtitles.length, 2);
+    assert.equal(streams[0].subtitles[0].language, 'tr');
+    assert.equal(streams[0].subtitles[0].url, 'https://four.pichive.online/nsub.php?v=sub_tr&p=93');
+    assert.equal(streams[0].subtitles[1].language, 'en');
+    assert.equal(streams[0].subtitles[1].url, 'https://four.pichive.online/nsub.php?v=sub_en&p=93');
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

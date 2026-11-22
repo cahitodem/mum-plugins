@@ -315,7 +315,13 @@ var require_matching = __commonJS({
       "bolum",
       "sezon",
       "hd",
-      "full"
+      "full",
+      "dublaj",
+      "altyazi",
+      "altyazili",
+      "turkce",
+      "tr",
+      "en"
     ]);
     function normalizeText(str) {
       if (!str) return "";
@@ -332,7 +338,7 @@ var require_matching = __commonJS({
       if (!slug) return "";
       try {
         var last = String(slug).split("/").filter(Boolean).pop() || "";
-        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi(?:si)?.*$/i, "").replace(/-turkce.*$/i, "").replace(/-dublaj.*$/i, "").replace(/-altyazi.*$/i, "").replace(/(\D+)\d+$/i, "$1").replace(/-/g, " ").trim();
       } catch (_) {
         return String(slug).replace(/-/g, " ");
       }
@@ -356,7 +362,24 @@ var require_matching = __commonJS({
           return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
         }
       }
-      if (cNorm === tNorm || sNorm === tNorm) {
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var sCleanTokens = tokenize(sClean);
+      var extraSlugTokens = sCleanTokens.filter(function(tok) {
+        if (tTokens.indexOf(tok) !== -1) return false;
+        var baseTok = tok.replace(/\d+$/, "");
+        if (baseTok && tTokens.indexOf(baseTok) !== -1) return false;
+        return true;
+      });
+      var isExactTitleOrSlug = cNorm === tNorm || sNorm === tNorm;
+      if (isExactTitleOrSlug) {
+        if (candSlug && extraSlugTokens.length > 0 && (tTokens.length <= 2 || extraSlugTokens.length >= 2)) {
+          return {
+            matched: false,
+            score: 0,
+            reason: "slug_extra_tokens_" + extraSlugTokens.join("_")
+          };
+        }
         var exactScore = 100;
         if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
           var yDiff = Math.abs(targetY - candY);
@@ -365,9 +388,7 @@ var require_matching = __commonJS({
         }
         return { matched: true, score: exactScore, reason: "exact_title_match" };
       }
-      var tTokens = tokenize(targetTitle);
-      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
-      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokensList = tokenize(candTitle).concat(sCleanTokens);
       var cTokens = new Set(cTokensList);
       var matchCount = 0;
       for (var i = 0; i < tTokens.length; i++) {
@@ -384,12 +405,22 @@ var require_matching = __commonJS({
         };
       }
       var score = coverage * 70;
-      var candUniqueTokens = new Set(tokenize(candTitle));
+      var candUniqueTokens = new Set(tokenize(candTitle).concat(sCleanTokens));
       var extraTokens = 0;
       candUniqueTokens.forEach(function(tok) {
-        if (tTokens.indexOf(tok) === -1) extraTokens++;
+        if (tTokens.indexOf(tok) !== -1) return;
+        var baseTok = tok.replace(/\d+$/, "");
+        if (baseTok && tTokens.indexOf(baseTok) !== -1) return;
+        extraTokens++;
       });
       if (extraTokens > 0) {
+        if (tTokens.length <= 2 && extraTokens >= 1) {
+          return {
+            matched: false,
+            score: 0,
+            reason: "short_title_extra_token_rejection"
+          };
+        }
         var extraRatio = candUniqueTokens.size > 0 ? extraTokens / candUniqueTokens.size : 0;
         if (extraTokens >= 2 && (extraRatio >= 0.5 || extraTokens >= tTokens.length)) {
           score -= extraTokens * 8 + 10;
@@ -481,6 +512,8 @@ var require_diziyou = __commonJS({
           let title = "";
           let origTitle = "";
           let year = "";
+          let originCountries = [];
+          let origLanguage = "";
           if (cleanId.startsWith("tt")) {
             const findRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal }, 8e3);
             if (findRes.ok) {
@@ -493,12 +526,14 @@ var require_diziyou = __commonJS({
                 if (item.first_air_date) {
                   year = String(item.first_air_date).split("-")[0];
                 }
+                if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
+                if (item.original_language) origLanguage = item.original_language;
               }
             }
           } else {
             numericId = cleanId;
           }
-          if (numericId && (!title || !origTitle || !year)) {
+          if (numericId && (!title || !origTitle || !year || !origLanguage || originCountries.length === 0)) {
             const tRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal }, 8e3);
             if (tRes.ok) {
               const tData = yield tRes.json();
@@ -507,12 +542,16 @@ var require_diziyou = __commonJS({
               if (!year && tData.first_air_date) {
                 year = String(tData.first_air_date).split("-")[0];
               }
+              if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
+                originCountries = tData.origin_country;
+              }
+              if (tData.original_language) origLanguage = tData.original_language;
             }
           }
-          return { title, origTitle, numericId, year };
+          return { title, origTitle, numericId, year, originCountries, origLanguage };
         } catch (e) {
           if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
-          return { title: "", origTitle: "", numericId: id, year: "" };
+          return { title: "", origTitle: "", numericId: id, year: "", originCountries: [], origLanguage: "" };
         }
       });
     }
@@ -604,6 +643,10 @@ var require_diziyou = __commonJS({
           seasonNum = Number(seasonNum);
           episodeNum = Number(episodeNum);
           const info = yield resolveTmdbInfo(tmdbId, mediaType, signal);
+          const isPureTurkish = info.origLanguage === "tr" && Array.isArray(info.originCountries) && info.originCountries.length === 1 && info.originCountries[0] === "TR";
+          if (isPureTurkish) {
+            return [];
+          }
           const trTitle = (info.title || "").trim();
           const orgTitle = (info.origTitle || "").trim();
           const targetYear = info.year || "";

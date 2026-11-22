@@ -323,6 +323,8 @@ var require_sezonlukdizi = __commonJS({
           var numericId = null;
           var title = "";
           var origTitle = "";
+          var originCountries = [];
+          var origLanguage = "";
           if (cleanId.startsWith("tt")) {
             var findRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal }, 8e3);
             if (findRes.ok) {
@@ -332,23 +334,35 @@ var require_sezonlukdizi = __commonJS({
                 numericId = item.id;
                 title = item.name || "";
                 origTitle = item.original_name || "";
+                if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
+                if (item.original_language) origLanguage = item.original_language;
               }
             }
           } else {
             numericId = cleanId;
           }
-          if (numericId && (!title || !origTitle)) {
+          if (numericId && (!title || !origTitle || !origLanguage || originCountries.length === 0)) {
             var tRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal }, 8e3);
             if (tRes.ok) {
               var tData = yield tRes.json();
               title = tData.name || title;
               origTitle = tData.original_name || origTitle;
+              if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
+                originCountries = tData.origin_country;
+              }
+              if (tData.original_language) origLanguage = tData.original_language;
             }
           }
-          return { title, origTitle, numericId };
+          return {
+            title,
+            origTitle,
+            numericId,
+            originCountries,
+            origLanguage
+          };
         } catch (e) {
           if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
-          return { title: "", origTitle: "", numericId: id };
+          return { title: "", origTitle: "", numericId: id, originCountries: [], origLanguage: "" };
         }
       });
     }
@@ -383,10 +397,26 @@ var require_sezonlukdizi = __commonJS({
               var slugNorm = normalizeTitle(slug.replace(/-/g, " "));
               var score = 0;
               candidates.forEach(function(target) {
-                if (slugNorm === target || itemTitle === target) score = Math.max(score, 100);
-                else if (itemTitle.indexOf(target) === 0 || slugNorm.indexOf(target) === 0) score = Math.max(score, 80);
-                else if (target.indexOf(itemTitle) === 0 && itemTitle.length >= 4) score = Math.max(score, 70);
-                else if (target.indexOf(slugNorm) === 0 && slugNorm.length >= 4) score = Math.max(score, 65);
+                var targetTokens = target.split(/\s+/).filter(Boolean);
+                var slugTokens = slugNorm.split(/\s+/).filter(Boolean);
+                var extraTokens = slugTokens.filter(function(t) {
+                  return targetTokens.indexOf(t) === -1;
+                });
+                if (slugNorm === target || itemTitle === target) {
+                  if (extraTokens.length > 0 && targetTokens.length <= 2) {
+                  } else {
+                    score = Math.max(score, 100);
+                  }
+                } else if (itemTitle.indexOf(target) === 0 || slugNorm.indexOf(target) === 0) {
+                  if (extraTokens.length > 0 && targetTokens.length <= 2) {
+                  } else {
+                    score = Math.max(score, 80);
+                  }
+                } else if (target.indexOf(itemTitle) === 0 && itemTitle.length >= 4) {
+                  score = Math.max(score, 70);
+                } else if (target.indexOf(slugNorm) === 0 && slugNorm.length >= 4) {
+                  score = Math.max(score, 65);
+                }
               });
               if (score > bestScore) {
                 bestScore = score;
@@ -761,6 +791,10 @@ var require_sezonlukdizi = __commonJS({
           seasonNum = Number(seasonNum);
           episodeNum = Number(episodeNum);
           var info = yield resolveTmdbInfo(tmdbId, mediaType, signal);
+          var isPureTurkish = info.origLanguage === "tr" && Array.isArray(info.originCountries) && info.originCountries.length === 1 && info.originCountries[0] === "TR";
+          if (isPureTurkish) {
+            return [];
+          }
           var titleTr = (info.title || "").trim();
           var titleEn = (info.origTitle || "").trim();
           var displayTitle = titleTr || titleEn || "Dizi";

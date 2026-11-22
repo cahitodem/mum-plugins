@@ -898,3 +898,219 @@ test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR 
   assert.equal(lastReport.status, 'sources-found');
   assert.equal(lastReport.count, 1);
 });
+
+// ── 12. QuickJS / Nuvio Runtime Compatibility (Buffer ve Node crypto Olmadan) ──
+
+test('RoketDizi: QuickJS / Nuvio runtime compatibility without Buffer and Node crypto (CryptoJS fallback for decryptPlayer, solveNpGate and full stream extraction)', async () => {
+  // A. QuickJS CryptoJS Mock (Nuvio Masaüstü JNI Bridge / CryptoJS Polyfill Simülasyonu)
+  function createQuickJsCryptoJSMock() {
+    function wordArrayFromBytes(bytes) {
+      const words = [];
+      for (let i = 0; i < bytes.length; i++) {
+        words[i >>> 2] |= (bytes[i] & 0xff) << (24 - (i % 4) * 8);
+      }
+      return {
+        words,
+        sigBytes: bytes.length,
+        _bytes: bytes,
+        toString(enc) {
+          if (enc && enc._type === 'utf8') {
+            return new TextDecoder('utf-8').decode(bytes);
+          }
+          return bytes.toString('hex');
+        }
+      };
+    }
+
+    function bytesFromWordArray(wa) {
+      if (wa._bytes) return wa._bytes;
+      const bytes = Buffer.alloc(wa.sigBytes);
+      for (let i = 0; i < wa.sigBytes; i++) {
+        bytes[i] = (wa.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+      }
+      return bytes;
+    }
+
+    return {
+      enc: {
+        Hex: {
+          parse: (hex) => wordArrayFromBytes(Buffer.from(hex, 'hex')),
+          stringify: (wa) => bytesFromWordArray(wa).toString('hex')
+        },
+        Utf8: {
+          _type: 'utf8',
+          parse: (str) => wordArrayFromBytes(Buffer.from(str, 'utf8')),
+          stringify: (wa) => new TextDecoder('utf-8').decode(bytesFromWordArray(wa))
+        }
+      },
+      mode: { CBC: 'CBC' },
+      pad: { Pkcs7: 'Pkcs7' },
+      algo: { SHA512: 'SHA512' },
+      PBKDF2: (password, saltWa, options) => {
+        const iter = options.iterations || 1000;
+        const keyLenBytes = (options.keySize || 8) * 4;
+        const saltBytes = bytesFromWordArray(saltWa);
+        const passBytes = typeof password === 'string' ? Buffer.from(password, 'utf8') : bytesFromWordArray(password);
+        const hasher = (options.hasher && options.hasher.name) || options.hasher || 'sha512';
+        const key = crypto.pbkdf2Sync(passBytes, saltBytes, iter, keyLenBytes, hasher.toString().toLowerCase());
+        return wordArrayFromBytes(key);
+      },
+      AES: {
+        decrypt: (ciphertextBase64, keyWa, options) => {
+          const keyBytes = bytesFromWordArray(keyWa);
+          const ivBytes = bytesFromWordArray(options.iv);
+          const cipherBytes = Buffer.from(ciphertextBase64, 'base64');
+          const decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, ivBytes);
+          const dec = Buffer.concat([decipher.update(cipherBytes), decipher.final()]);
+          return wordArrayFromBytes(dec);
+        }
+      },
+      SHA256: (message) => {
+        const msgBytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : bytesFromWordArray(message);
+        const hash = crypto.createHash('sha256').update(msgBytes).digest();
+        return wordArrayFromBytes(hash);
+      }
+    };
+  }
+
+  const quickJsCrypto = createQuickJsCryptoJSMock();
+  const targetUrl = 'https://four.pichive.online/iframe.php?v=matrix_quickjs_603';
+  const encPayload = createEncPayload(targetUrl, 'matrix_secret_key');
+
+  // B. Doğrudan fonksiyon testleri (globalThis.CryptoJS üzerinden deşifreleme ve PoW)
+  const origCryptoJS = globalThis.CryptoJS;
+  globalThis.CryptoJS = quickJsCrypto;
+  try {
+    // 1. decryptPlayer doğrulaması
+    const decryptedUrl = roketdizi._raw.decryptPlayer(encPayload);
+    assert.equal(decryptedUrl, targetUrl, 'decryptPlayer CryptoJS ile başarıyla deşifrelemeli');
+
+    // 2. solveNpGate PoW doğrulaması
+    const powResult = roketdizi._raw.solveNpGate({ n: 'testnonce_7' });
+    assert.equal(powResult, '93', 'solveNpGate CryptoJS.SHA256 ile testnonce_7 çözümünü (93) bulmalı');
+  } finally {
+    if (origCryptoJS !== undefined) {
+      globalThis.CryptoJS = origCryptoJS;
+    } else {
+      delete globalThis.CryptoJS;
+    }
+  }
+
+  // C. QuickJS Sandbox VM Ortamında Bundle Doğrulaması (Node Buffer ve crypto KESİNLİKLE YOK)
+  const matrixEnc = createEncPayload('https://four.pichive.online/iframe.php?v=matrix_player_99', 'the_matrix_key');
+  const quickJsFetchMock = async (url) => {
+    const u = String(url);
+    if (u.includes('api.themoviedb.org/3/movie/603') || u.includes('api.themoviedb.org/3/find/603')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 603,
+          title: 'Matrix',
+          original_title: 'The Matrix',
+          release_date: '1999-03-30'
+        })
+      };
+    }
+    if (u.includes('s=Matrix') || u.includes('s=The%20Matrix')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <div class="search-results">
+            <a href="/film/the-matrix/izle" aria-label="The Matrix, 1999">The Matrix</a>
+          </div>
+        `
+      };
+    }
+    if (u === 'https://roketdizi.life/film/the-matrix/izle') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <body>
+              <script>
+                self.__next_f.push([1,"{\\"enc\\":{\\"ciphertext\\":\\"${matrixEnc.ciphertext}\\",\\"iv\\":\\"${matrixEnc.iv}\\",\\"salt\\":\\"${matrixEnc.salt}\\"},\\"k\\":\\"${matrixEnc.k}\\"}"]);
+              </script>
+            </body>
+          </html>
+        `
+      };
+    }
+    if (u === 'https://four.pichive.online/iframe.php?v=matrix_player_99') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <script>
+              window.NP_GATE = { "n": "testnonce_7" };
+              window.NP_CONFIG = {
+                "file": "https://four.pichive.online/hls/matrix/master.m3u8",
+                "tracks": [
+                  { "file": "/sub/tr.vtt", "label": "Türkçe", "srclang": "tr" }
+                ]
+              };
+            </script>
+          </html>
+        `
+      };
+    }
+    throw new Error('Unexpected URL in QuickJS sandbox: ' + u);
+  };
+
+  // Nuvio QuickJS simülasyonu: Buffer ve Node crypto YOK!
+  const reports = [];
+  const quickJsContext = vm.createContext({
+    module: { exports: {} },
+    console: {
+      info: r => reports.push(r),
+      log: () => {},
+      warn: () => {},
+      error: () => {}
+    },
+    fetch: quickJsFetchMock,
+    setTimeout,
+    clearTimeout,
+    URL,
+    URLSearchParams,
+    AbortController,
+    AbortSignal,
+    atob,
+    btoa,
+    TextEncoder,
+    TextDecoder,
+    CryptoJS: quickJsCrypto,
+    require: name => {
+      if (['cheerio', 'cheerio-without-node-native', 'react-native-cheerio'].includes(name)) {
+        return require('cheerio-without-node-native');
+      }
+      if (name === 'crypto-js') return quickJsCrypto;
+      if (name === 'crypto') throw Error("Module 'crypto' is not available in QuickJS");
+      throw Error('Unavailable runtime module in QuickJS: ' + name);
+    }
+  });
+  quickJsContext.globalThis = quickJsContext;
+
+  const scraper = manifest.scrapers.find(s => s.id === 'mum_roketdizi');
+  assert.ok(scraper, 'mum_roketdizi scraper bulunmalı');
+  const bundleCode = fs.readFileSync(scraper.filename, 'utf8');
+  vm.runInContext('(function(){\n' + bundleCode + '\n})();', quickJsContext, { timeout: 2000 });
+
+  const quickJsProvider = quickJsContext.module.exports;
+  const streams = await quickJsProvider.getStreams('603', 'movie');
+
+  assert.ok(Array.isArray(streams), 'Streams bir dizi olmalı');
+  assert.equal(streams.length, 1, 'Matrix için 1 adet HLS akışı bulunmalı');
+  assert.equal(streams[0].url, 'https://four.pichive.online/hls/matrix/master.m3u8?p=93', 'PoW çözülmüş p=93 parametreli akış dönmeli');
+  assert.equal(streams[0].type, 'hls');
+  assert.equal(streams[0].provider, 'roketdizi');
+
+  const lastReport = reports.map(r => {
+    try { return JSON.parse(r.replace(/^\[MUM\]\s*/, '')); } catch (_) { return null; }
+  }).filter(Boolean).at(-1);
+  assert.ok(lastReport, 'Adapter en az bir rapor üretmelidir');
+  assert.equal(lastReport.status, 'sources-found');
+  assert.equal(lastReport.count, 1);
+});

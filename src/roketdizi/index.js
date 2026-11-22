@@ -1,9 +1,17 @@
 // MUM modification 2026-11-22. GPL-3.0-only; see LICENSE and NOTICE.md.
-var crypto;
+var _nodeCrypto = null;
 try {
-  crypto = require('crypto');
-} catch (_) {
-  crypto = null;
+  _nodeCrypto = require('crypto');
+} catch (_) {}
+
+function getCryptoJS() {
+  if (typeof globalThis !== 'undefined' && globalThis.CryptoJS) return globalThis.CryptoJS;
+  if (typeof CryptoJS !== 'undefined') return CryptoJS;
+  try {
+    return require('crypto-js');
+  } catch (_) {
+    return null;
+  }
 }
 const cheerio = require('cheerio-without-node-native');
 const { sortStreamsByQuality, filterHighestQuality } = require('../shared/quality.js');
@@ -53,6 +61,9 @@ async function resolveTmdbInfo(id, mediaType, signal) {
     var titleEn = '';
     var origTitle = '';
     var year = '';
+    var originCountries = [];
+    var origLanguage = '';
+    var imdbId = cleanId.startsWith('tt') ? cleanId : null;
 
     if (cleanId.startsWith('tt')) {
       var findRes = await fetchWithTimeout(
@@ -71,6 +82,8 @@ async function resolveTmdbInfo(id, mediaType, signal) {
           origTitle = item.original_title || item.original_name || '';
           var date = item.release_date || item.first_air_date || '';
           if (date) year = String(date).split('-')[0];
+          if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
+          if (item.original_language) origLanguage = item.original_language;
         }
       }
     } else {
@@ -91,6 +104,14 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         origTitle = tData.original_title || tData.original_name || origTitle;
         var tDate = tData.release_date || tData.first_air_date || '';
         if (!year && tDate) year = String(tDate).split('-')[0];
+        if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
+          originCountries = tData.origin_country;
+        } else if (Array.isArray(tData.production_countries) && tData.production_countries.length > 0) {
+          originCountries = tData.production_countries.map(function(p) { return p.iso_3166_1; }).filter(Boolean);
+        }
+        if (tData.original_language) origLanguage = tData.original_language;
+        if (tData.external_ids && tData.external_ids.imdb_id) imdbId = tData.external_ids.imdb_id;
+        else if (tData.imdb_id) imdbId = tData.imdb_id;
       }
 
       // 2. İngilizce / Uluslararası başlık çekme
@@ -105,6 +126,8 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         if (!origTitle) origTitle = enData.original_title || enData.original_name || '';
         var enDate = enData.release_date || enData.first_air_date || '';
         if (!year && enDate) year = String(enDate).split('-')[0];
+        if (!origLanguage && enData.original_language) origLanguage = enData.original_language;
+        if (!imdbId && enData.external_ids && enData.external_ids.imdb_id) imdbId = enData.external_ids.imdb_id;
       }
     }
 
@@ -115,11 +138,24 @@ async function resolveTmdbInfo(id, mediaType, signal) {
       titleEn: titleEn,
       origTitle: origTitle,
       numericId: numericId,
-      year: year
+      year: year,
+      originCountries: originCountries,
+      origLanguage: origLanguage,
+      imdbId: imdbId
     };
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
-    return { title: '', titleTr: '', titleEn: '', origTitle: '', numericId: id, year: '' };
+    return {
+      title: '',
+      titleTr: '',
+      titleEn: '',
+      origTitle: '',
+      numericId: id,
+      year: '',
+      originCountries: [],
+      origLanguage: '',
+      imdbId: (typeof id === 'string' && id.startsWith('tt')) ? id.split(':')[0] : null
+    };
   }
 }
 
@@ -261,29 +297,70 @@ function extractEncParams(html) {
 
 function decryptPlayer(enc) {
   if (!enc || !enc.ciphertext || !enc.iv || !enc.salt || !enc.k) return null;
-  try {
-    var key = crypto.pbkdf2Sync(Buffer.from(enc.k, 'utf8'), Buffer.from(enc.salt, 'hex'), 999, 32, 'sha512');
-    var decipher = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(enc.iv, 'hex'));
-    var decrypted = Buffer.concat([
-      decipher.update(Buffer.from(enc.ciphertext, 'base64')),
-      decipher.final()
-    ]).toString('utf8');
-    return decrypted.trim();
-  } catch (_) {
-    return null;
+
+  // 1. Nuvio QuickJS / Browser ortamı: CryptoJS ile PBKDF2 SHA-512 + AES-256-CBC
+  var CJS = getCryptoJS();
+  if (CJS && CJS.PBKDF2 && CJS.AES && CJS.enc) {
+    try {
+      var saltWa = CJS.enc.Hex.parse(enc.salt);
+      var ivWa = CJS.enc.Hex.parse(enc.iv);
+      var hasher = (CJS.algo && CJS.algo.SHA512) || 'SHA512';
+      var keyWa = CJS.PBKDF2(enc.k, saltWa, { keySize: 8, iterations: 999, hasher: hasher });
+      var mode = (CJS.mode && CJS.mode.CBC) || 'CBC';
+      var padding = (CJS.pad && CJS.pad.Pkcs7) || 'Pkcs7';
+      var decWa = CJS.AES.decrypt(enc.ciphertext, keyWa, { iv: ivWa, mode: mode, padding: padding });
+      var result = decWa.toString(CJS.enc.Utf8);
+      if (result) return result.trim();
+    } catch (_) {}
   }
+
+  // 2. Node.js ortamı: crypto modülü ile fallback
+  if (_nodeCrypto && typeof Buffer !== 'undefined') {
+    try {
+      var key = _nodeCrypto.pbkdf2Sync(Buffer.from(enc.k, 'utf8'), Buffer.from(enc.salt, 'hex'), 999, 32, 'sha512');
+      var decipher = _nodeCrypto.createDecipheriv('aes-256-cbc', key, Buffer.from(enc.iv, 'hex'));
+      var decrypted = Buffer.concat([
+        decipher.update(Buffer.from(enc.ciphertext, 'base64')),
+        decipher.final()
+      ]).toString('utf8');
+      return decrypted.trim();
+    } catch (_) {}
+  }
+
+  return null;
 }
 
 // ── Pichive NP_GATE PoW Çözücü ve NP_CONFIG Ayrıştırıcı ───────────────
 function solveNpGate(gate) {
   if (!gate || !gate.n) return null;
+  var nonce = gate.n;
   var cmiy = String.fromCharCode(75, 83, 102, 76, 107, 83, 86, 73, 77, 84); // "KSfLkSVIMT"
-  for (var i = 0; i <= 1000000; i++) {
-    var hash = crypto.createHash('sha256').update(i + '|' + cmiy + '|' + gate.n).digest();
-    if ((hash.readUInt32BE(20) >>> 20) === 0) {
-      return i.toString();
-    }
+
+  // 1. Nuvio QuickJS / Browser ortamı: CryptoJS.SHA256
+  var CJS = getCryptoJS();
+  if (CJS && CJS.SHA256) {
+    try {
+      for (var i = 0; i <= 10000; i++) {
+        var hashWa = CJS.SHA256(i + '|' + cmiy + '|' + nonce);
+        if (hashWa && hashWa.words && (hashWa.words[5] >>> 20) === 0) {
+          return String(i);
+        }
+      }
+    } catch (_) {}
   }
+
+  // 2. Node.js ortamı: crypto.createHash
+  if (_nodeCrypto && typeof Buffer !== 'undefined') {
+    try {
+      for (var j = 0; j <= 10000; j++) {
+        var hash = _nodeCrypto.createHash('sha256').update(j + '|' + cmiy + '|' + nonce).digest();
+        if ((hash.readUInt32BE(20) >>> 20) === 0) {
+          return j.toString();
+        }
+      }
+    } catch (_) {}
+  }
+
   return null;
 }
 
@@ -534,6 +611,22 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
 
     // 1. TMDB Meta Verisi
     var info = await resolveTmdbInfo(tmdbId, mediaType, signal);
+
+    // Yerli TR yapım izolasyonu:
+    // RoketDizi yabancı dizi ve Kore/Asya dizileri sitesidir; yerli Türk dizilerini içermez.
+    // Orijinal dili Türkçe ve menşei sadece Türkiye olan yerli dizilerde (Exxen, BluTV, Gain vb.)
+    // yabancı dizi sitelerinde arama yapmak yanlış homonim akışlara (örn. Karma vs Akyeon) yol açar.
+    var isPureTurkishSeries = (
+      mediaType !== 'movie' &&
+      info.origLanguage === 'tr' &&
+      Array.isArray(info.originCountries) &&
+      info.originCountries.length === 1 &&
+      info.originCountries[0] === 'TR'
+    );
+    if (isPureTurkishSeries) {
+      return [];
+    }
+
     var searchQueries = [...new Set([info.titleTr, info.titleEn, info.origTitle, info.title].filter(Boolean))];
     if (searchQueries.length === 0) {
       return [];
@@ -578,6 +671,15 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
     var pageHtml = '';
     if (pageRes.ok) {
       pageHtml = await pageRes.text();
+    }
+
+    var targetImdb = info.imdbId || (typeof tmdbId === 'string' && tmdbId.startsWith('tt') ? tmdbId.split(':')[0] : null);
+    if (targetImdb && pageHtml) {
+      var imdbMatch = pageHtml.match(/imdb\.com\/title\/(tt\d+)/i) || pageHtml.match(/"(?:mj)?imdb(?:href)?"\s*:\s*"[^"]*?(tt\d+)/i);
+      var pageImdb = imdbMatch ? imdbMatch[1].toLowerCase() : null;
+      if (pageImdb && pageImdb !== targetImdb.toLowerCase()) {
+        return [];
+      }
     }
 
     // Dizi için doğrudan URL bulunamadıysa veya enc içermiyorsa ana dizi sayfasından bölüm bağlantısını tara
@@ -726,7 +828,17 @@ if (typeof getStreams === 'function') {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = wrapAll({ getStreams: getStreams }, cfgReady);
+  module.exports = wrapAll({
+    getStreams: getStreams,
+    decryptPlayer: decryptPlayer,
+    solveNpGate: solveNpGate,
+    getCryptoJS: getCryptoJS
+  }, cfgReady);
+  module.exports._raw = {
+    decryptPlayer: decryptPlayer,
+    solveNpGate: solveNpGate,
+    getCryptoJS: getCryptoJS
+  };
 }
 if (typeof globalThis !== 'undefined') {
   globalThis.getStreams = getStreams;

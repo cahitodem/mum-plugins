@@ -2,7 +2,8 @@
 
 var STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-  'bir', 've', 'ile', 'icin', 'de', 'da', 'izle', 'dizi', 'dizisi', 'film', 'filmi', 'bolum', 'sezon', 'hd', 'full'
+  'bir', 've', 'ile', 'icin', 'de', 'da', 'izle', 'dizi', 'dizisi', 'film', 'filmi', 'bolum', 'sezon', 'hd', 'full',
+  'dublaj', 'altyazi', 'altyazili', 'turkce', 'tr', 'en'
 ]);
 
 function normalizeText(str) {
@@ -30,8 +31,11 @@ function cleanSlug(slug) {
     return last
       .replace(/-film-izle.*$/i, '')
       .replace(/-izle.*$/i, '')
-      .replace(/-dizi.*$/i, '')
+      .replace(/-dizi(?:si)?.*$/i, '')
       .replace(/-turkce.*$/i, '')
+      .replace(/-dublaj.*$/i, '')
+      .replace(/-altyazi.*$/i, '')
+      .replace(/(\D+)\d+$/i, '$1')
       .replace(/-/g, ' ')
       .trim();
   } catch (_) {
@@ -68,8 +72,31 @@ function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candY
     }
   }
 
+  var tTokens = tokenize(targetTitle);
+  if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+  var sCleanTokens = tokenize(sClean);
+
+  // Aday slug'ı içindeki hedefe ait olmayan fazladan belirteçleri tespit et
+  var extraSlugTokens = sCleanTokens.filter(function(tok) {
+    if (tTokens.indexOf(tok) !== -1) return false;
+    var baseTok = tok.replace(/\d+$/, '');
+    if (baseTok && tTokens.indexOf(baseTok) !== -1) return false;
+    return true;
+  });
+
   // 1. Tam İsim veya Tam Slug Eşleşmesi
-  if (cNorm === tNorm || sNorm === tNorm) {
+  // Ancak: Hedef kısa bir başlıksa (<= 2 kelime) ve aday slug'ında hedefte olmayan fazladan token (örn. karma-akyeon vs karma)
+  // bulunuyorsa bu tam bir eşleşme değil, homonim/spinoff çakışmasıdır.
+  var isExactTitleOrSlug = (cNorm === tNorm || sNorm === tNorm);
+  if (isExactTitleOrSlug) {
+    if (candSlug && extraSlugTokens.length > 0 && (tTokens.length <= 2 || extraSlugTokens.length >= 2)) {
+      return {
+        matched: false,
+        score: 0,
+        reason: 'slug_extra_tokens_' + extraSlugTokens.join('_')
+      };
+    }
+
     var exactScore = 100;
     if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
       var yDiff = Math.abs(targetY - candY);
@@ -80,10 +107,7 @@ function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candY
   }
 
   // 2. Token Bazlı Kapsama Oranı (Word Coverage)
-  var tTokens = tokenize(targetTitle);
-  if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
-
-  var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+  var cTokensList = tokenize(candTitle).concat(sCleanTokens);
   var cTokens = new Set(cTokensList);
 
   var matchCount = 0;
@@ -104,13 +128,24 @@ function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candY
 
   var score = coverage * 70;
 
-  // Ekstra kelime cezası: Aday başlığında hedefe ait olmayan fazladan kelimeler varsa puan kır
-  var candUniqueTokens = new Set(tokenize(candTitle));
+  // Ekstra kelime cezası: Aday başlığında ve slug'ında hedefe ait olmayan fazladan kelimeler varsa puan kır
+  var candUniqueTokens = new Set(tokenize(candTitle).concat(sCleanTokens));
   var extraTokens = 0;
   candUniqueTokens.forEach(function(tok) {
-    if (tTokens.indexOf(tok) === -1) extraTokens++;
+    if (tTokens.indexOf(tok) !== -1) return;
+    var baseTok = tok.replace(/\d+$/, '');
+    if (baseTok && tTokens.indexOf(baseTok) !== -1) return;
+    extraTokens++;
   });
   if (extraTokens > 0) {
+    // Kısa başlıklarda (<= 2 kelime) adayın ekstra kelime içermesi durumunda homonim/spinoff koruması
+    if (tTokens.length <= 2 && extraTokens >= 1) {
+      return {
+        matched: false,
+        score: 0,
+        reason: 'short_title_extra_token_rejection'
+      };
+    }
     // Eğer adayın kelimelerinin %50 veya daha fazlası hedefte yoksa veya ekstra kelime sayısı hedeften fazlaysa ağır ceza ver (alt başlık / spinoff koruması)
     var extraRatio = candUniqueTokens.size > 0 ? (extraTokens / candUniqueTokens.size) : 0;
     if (extraTokens >= 2 && (extraRatio >= 0.5 || extraTokens >= tTokens.length)) {

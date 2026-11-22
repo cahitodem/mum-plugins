@@ -45,6 +45,8 @@ async function resolveTmdbInfo(id, mediaType, signal) {
     let title = '';
     let origTitle = '';
     let year = '';
+    let originCountries = [];
+    let origLanguage = '';
 
     if (cleanId.startsWith('tt')) {
       const findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
@@ -58,13 +60,15 @@ async function resolveTmdbInfo(id, mediaType, signal) {
           if (item.first_air_date) {
             year = String(item.first_air_date).split('-')[0];
           }
+          if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
+          if (item.original_language) origLanguage = item.original_language;
         }
       }
     } else {
       numericId = cleanId;
     }
 
-    if (numericId && (!title || !origTitle || !year)) {
+    if (numericId && (!title || !origTitle || !year || !origLanguage || originCountries.length === 0)) {
       const tRes = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal: signal }, 8000);
       if (tRes.ok) {
         const tData = await tRes.json();
@@ -73,13 +77,17 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         if (!year && tData.first_air_date) {
           year = String(tData.first_air_date).split('-')[0];
         }
+        if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
+          originCountries = tData.origin_country;
+        }
+        if (tData.original_language) origLanguage = tData.original_language;
       }
     }
 
-    return { title, origTitle, numericId, year };
+    return { title, origTitle, numericId, year, originCountries, origLanguage };
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
-    return { title: '', origTitle: '', numericId: id, year: '' };
+    return { title: '', origTitle: '', numericId: id, year: '', originCountries: [], origLanguage: '' };
   }
 }
 
@@ -178,6 +186,19 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
     seasonNum = Number(seasonNum);
     episodeNum = Number(episodeNum);
     const info = await resolveTmdbInfo(tmdbId, mediaType, signal);
+
+    // Yerli TR yapım izolasyonu:
+    // DiziYou platformu yalnızca yabancı dizileri içerir.
+    const isPureTurkish = (
+      info.origLanguage === 'tr' &&
+      Array.isArray(info.originCountries) &&
+      info.originCountries.length === 1 &&
+      info.originCountries[0] === 'TR'
+    );
+    if (isPureTurkish) {
+      return [];
+    }
+
     const trTitle = (info.title || '').trim();
     const orgTitle = (info.origTitle || '').trim();
     const targetYear = info.year || '';

@@ -119,3 +119,17 @@ test('matching: pickBestCandidate rejects Malcolm in the Middle: Life\'s Still U
   const matchedWithoutYear = pickBestCandidate(candidates, 'Malcolm in the Middle', null);
   assert.equal(matchedWithoutYear, null);
 });
+
+test('matching: Karma (2025) vs Karma with slug /dizi/karma-akyeon (2025) MUST be rejected due to slug discrepancy', () => {
+  const result = calculateMatchScore('Karma', '2025', 'Karma', '/dizi/karma-akyeon', '2025');
+  assert.equal(result.matched, false, 'Candidate with extra slug token (akyeon) must be rejected for short title Karma');
+  assert.match(result.reason, /slug_extra_tokens/);
+});
+
+test('matching: pickBestCandidate rejects candidate with foreign slug subtitle on homonym title', () => {
+  const candidates = [
+    { title: 'Karma', slug: 'karma-akyeon', year: '2025', href: '/dizi/karma-akyeon' }
+  ];
+  const matched = pickBestCandidate(candidates, 'Karma', '2025');
+  assert.equal(matched, null, 'Foreign homonym with slug karma-akyeon must not match Karma');
+});

@@ -59,6 +59,8 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         var title = '';
         var origTitle = '';
         var year = '';
+        var originCountries = [];
+        var origLanguage = '';
 
         if (cleanId.startsWith('tt')) {
             var findRes = await safeFetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id&language=tr-TR', { signal });
@@ -74,13 +76,15 @@ async function resolveTmdbInfo(id, mediaType, signal) {
                     origTitle = item.original_name || item.original_title || '';
                     var dateStr = item.first_air_date || item.release_date || '';
                     if (dateStr) year = dateStr.slice(0, 4);
+                    if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
+                    if (item.original_language) origLanguage = item.original_language;
                 }
             }
         } else {
             numericId = cleanId;
         }
 
-        if (numericId && (!title || !origTitle || !year)) {
+        if (numericId && (!title || !origTitle || !year || !origLanguage || originCountries.length === 0)) {
             var isTvType = (mediaType === 'tv' || mediaType === 'series');
             var type = isTvType ? 'tv' : 'movie';
             var tRes = await safeFetch('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal });
@@ -90,15 +94,28 @@ async function resolveTmdbInfo(id, mediaType, signal) {
                 origTitle = tData.original_name || tData.original_title || origTitle;
                 var dateStr2 = tData.first_air_date || tData.release_date || '';
                 if (dateStr2) year = dateStr2.slice(0, 4);
+                if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
+                    originCountries = tData.origin_country;
+                } else if (Array.isArray(tData.production_countries) && tData.production_countries.length > 0) {
+                    originCountries = tData.production_countries.map(function(p) { return p.iso_3166_1; }).filter(Boolean);
+                }
+                if (tData.original_language) origLanguage = tData.original_language;
             }
         }
 
-        return { title: title, origTitle: origTitle, numericId: numericId, year: year };
+        return {
+            title: title,
+            origTitle: origTitle,
+            numericId: numericId,
+            year: year,
+            originCountries: originCountries,
+            origLanguage: origLanguage
+        };
     } catch (e) {
         if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
             throw e;
         }
-        return { title: '', origTitle: '', numericId: id, year: '' };
+        return { title: '', origTitle: '', numericId: id, year: '', originCountries: [], origLanguage: '' };
     }
 }
 
@@ -488,6 +505,21 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
         var episode = isMovie ? 1 : (parseInt(episodeNum) || 1);
 
         var info = await resolveTmdbInfo(tmdbIdOrArgs, mediaType, signal);
+
+        // Yerli TR yapım izolasyonu:
+        // YabancıDizi platformu yalnızca yabancı dizileri içerir.
+        // Orijinal dili Türkçe ve menşei sadece Türkiye olan yerli yapımlarda (Exxen, BluTV, Gain vb.)
+        // yabancı dizi sitelerinde arama yapmak yanlış homonim akışlara (örn. Karma vs Akyeon) yol açar.
+        var isPureTurkish = (
+            info.origLanguage === 'tr' &&
+            Array.isArray(info.originCountries) &&
+            info.originCountries.length === 1 &&
+            info.originCountries[0] === 'TR'
+        );
+        if (isPureTurkish) {
+            return [];
+        }
+
         var searchTitles = [info.origTitle, info.title].filter(Boolean);
         if (searchTitles.length === 0) return [];
 

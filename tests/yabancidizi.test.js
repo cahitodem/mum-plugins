@@ -218,3 +218,33 @@ test('YabancıDizi: Searching movie The Odyssey (2026) rejects Cosmos (2014) and
   assert.equal(streams.length, 0, 'Must return 0 streams instead of falsely playing Cosmos');
   assert.ok(!requests.some(r => r.includes('cosmos')), 'Must never query Cosmos URL');
 });
+
+test('YabancıDizi: Pure Turkish domestic show (Karma tt38896081) is immediately skipped and returns empty', async () => {
+  const requests = [];
+  const fetchMock = async (url) => {
+    const u = String(url);
+    requests.push(u);
+    if (u.includes('api.themoviedb.org/3/find/tt38896081')) {
+      return {
+        ok: true,
+        json: async () => ({
+          tv_results: [{
+            id: 305062,
+            name: 'Karma',
+            original_name: 'Karma',
+            origin_country: ['TR'],
+            original_language: 'tr',
+            first_air_date: '2025-01-01'
+          }]
+        })
+      };
+    }
+    throw Error('Unexpected url: ' + u);
+  };
+
+  const { provider } = loadBundle(fetchMock);
+  const streams = await provider.getStreams('tt38896081', 'tv', 1, 1);
+
+  assert.equal(streams.length, 0, 'Pure Turkish domestic production must return 0 streams on foreign series scraper');
+  assert.equal(requests.length, 1, 'Must abort immediately after TMDB resolve without querying foreign pirate site');
+});

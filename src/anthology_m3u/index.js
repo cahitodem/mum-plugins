@@ -178,6 +178,8 @@ async function resolveTmdbShow(rawId, signal) {
         const res = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${showId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: signal }, 8000);
         const data = await res.json();
         if (!data || (!data.name && !data.original_name)) return null;
+        if (isImdb && !data.imdb_id) data.imdb_id = cleanId;
+        if (data.external_ids && data.external_ids.imdb_id && !data.imdb_id) data.imdb_id = data.external_ids.imdb_id;
         return data;
     } catch (e) {
         if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
@@ -287,9 +289,9 @@ function scanFilmM3UContent(content, d, targetImdb, targetYear, seenUrls, result
         }
 
         // Eğer akış URL'si doğrudan başka bir IMDb ID içeriyorsa yanlış eşleşmeyi ele
-        const urlImdbMatch = nextLine.match(/\/vs\/(tt\d+)/i);
-        const lineImdb = urlImdbMatch ? urlImdbMatch[1] : null;
-        if (targetImdb && lineImdb && lineImdb !== targetImdb) {
+        const urlImdbMatch = nextLine.match(/\b(tt\d+)\b/i);
+        const lineImdb = urlImdbMatch ? urlImdbMatch[1].toLowerCase() : null;
+        if (targetImdb && lineImdb && lineImdb !== targetImdb.toLowerCase()) {
             continue;
         }
 
@@ -370,7 +372,7 @@ async function searchFilmStreams(tmdbId, opts) {
     }
 }
 
-function scanDiziM3UContent(content, d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results) {
+function scanDiziM3UContent(content, d, targetImdb, finalSeason, finalEpisode, sPad, ePad, seenUrls, results) {
     if (!content) return;
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
@@ -380,6 +382,13 @@ function scanDiziM3UContent(content, d, finalSeason, finalEpisode, sPad, ePad, s
         if (!nextLine.startsWith('http')) continue;
         if (isBlockedStream(nextLine)) continue;
         if (seenUrls.has(nextLine)) continue;
+
+        // Eğer akış URL'si doğrudan başka bir IMDb ID içeriyorsa yanlış eşleşmeyi ele
+        const urlImdbMatch = nextLine.match(/\b(tt\d+)\b/i);
+        const lineImdb = urlImdbMatch ? urlImdbMatch[1].toLowerCase() : null;
+        if (targetImdb && lineImdb && lineImdb !== targetImdb.toLowerCase()) {
+            continue;
+        }
 
         const tvgIdMatch = line.match(/tvg-id="(\d+)"/);
         const lineTvgId = tvgIdMatch ? tvgIdMatch[1] : null;
@@ -446,6 +455,8 @@ async function searchDiziStreams(rawId, seasonInput, episodeInput, opts) {
         const d = await resolveTmdbShow(rawId, signal);
         if (!d || (!d.name && !d.original_name)) return [];
 
+        const targetImdb = (d && d.imdb_id) || (d && d.external_ids && d.external_ids.imdb_id) || (typeof rawId === 'string' && rawId.startsWith('tt') ? rawId.split(':')[0] : null);
+
         const sPad = finalSeason.toString().padStart(2, '0');
         const ePad = finalEpisode.toString().padStart(2, '0');
 
@@ -463,7 +474,7 @@ async function searchDiziStreams(rawId, seasonInput, episodeInput, opts) {
             return fetchM3U(`${DIZI_BASE_URL}${fileName}`, signal);
         }));
         for (var i = 0; i < pContents.length; i++) {
-            scanDiziM3UContent(pContents[i], d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
+            scanDiziM3UContent(pContents[i], d, targetImdb, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
         }
 
         if (results.length === 0) {
@@ -473,13 +484,13 @@ async function searchDiziStreams(rawId, seasonInput, episodeInput, opts) {
                 return fetchM3U(`${DIZI_BASE_URL}${fileName}`, signal);
             }));
             for (var j = 0; j < fbContents.length; j++) {
-                scanDiziM3UContent(fbContents[j], d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
+                scanDiziM3UContent(fbContents[j], d, targetImdb, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
             }
         }
 
         if (results.length === 0 && DIZI_FULL_URL && (!signal || !signal.aborted)) {
             const fullContent = await fetchM3U(DIZI_FULL_URL, signal);
-            scanDiziM3UContent(fullContent, d, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
+            scanDiziM3UContent(fullContent, d, targetImdb, finalSeason, finalEpisode, sPad, ePad, seenUrls, results);
         }
 
         return results;

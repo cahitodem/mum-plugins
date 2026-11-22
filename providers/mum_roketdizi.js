@@ -315,7 +315,13 @@ var require_matching = __commonJS({
       "bolum",
       "sezon",
       "hd",
-      "full"
+      "full",
+      "dublaj",
+      "altyazi",
+      "altyazili",
+      "turkce",
+      "tr",
+      "en"
     ]);
     function normalizeText(str) {
       if (!str) return "";
@@ -332,7 +338,7 @@ var require_matching = __commonJS({
       if (!slug) return "";
       try {
         var last = String(slug).split("/").filter(Boolean).pop() || "";
-        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi(?:si)?.*$/i, "").replace(/-turkce.*$/i, "").replace(/-dublaj.*$/i, "").replace(/-altyazi.*$/i, "").replace(/(\D+)\d+$/i, "$1").replace(/-/g, " ").trim();
       } catch (_) {
         return String(slug).replace(/-/g, " ");
       }
@@ -356,7 +362,24 @@ var require_matching = __commonJS({
           return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
         }
       }
-      if (cNorm === tNorm || sNorm === tNorm) {
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var sCleanTokens = tokenize(sClean);
+      var extraSlugTokens = sCleanTokens.filter(function(tok) {
+        if (tTokens.indexOf(tok) !== -1) return false;
+        var baseTok = tok.replace(/\d+$/, "");
+        if (baseTok && tTokens.indexOf(baseTok) !== -1) return false;
+        return true;
+      });
+      var isExactTitleOrSlug = cNorm === tNorm || sNorm === tNorm;
+      if (isExactTitleOrSlug) {
+        if (candSlug && extraSlugTokens.length > 0 && (tTokens.length <= 2 || extraSlugTokens.length >= 2)) {
+          return {
+            matched: false,
+            score: 0,
+            reason: "slug_extra_tokens_" + extraSlugTokens.join("_")
+          };
+        }
         var exactScore = 100;
         if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
           var yDiff = Math.abs(targetY - candY);
@@ -365,9 +388,7 @@ var require_matching = __commonJS({
         }
         return { matched: true, score: exactScore, reason: "exact_title_match" };
       }
-      var tTokens = tokenize(targetTitle);
-      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
-      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokensList = tokenize(candTitle).concat(sCleanTokens);
       var cTokens = new Set(cTokensList);
       var matchCount = 0;
       for (var i = 0; i < tTokens.length; i++) {
@@ -384,12 +405,22 @@ var require_matching = __commonJS({
         };
       }
       var score = coverage * 70;
-      var candUniqueTokens = new Set(tokenize(candTitle));
+      var candUniqueTokens = new Set(tokenize(candTitle).concat(sCleanTokens));
       var extraTokens = 0;
       candUniqueTokens.forEach(function(tok) {
-        if (tTokens.indexOf(tok) === -1) extraTokens++;
+        if (tTokens.indexOf(tok) !== -1) return;
+        var baseTok = tok.replace(/\d+$/, "");
+        if (baseTok && tTokens.indexOf(baseTok) !== -1) return;
+        extraTokens++;
       });
       if (extraTokens > 0) {
+        if (tTokens.length <= 2 && extraTokens >= 1) {
+          return {
+            matched: false,
+            score: 0,
+            reason: "short_title_extra_token_rejection"
+          };
+        }
         var extraRatio = candUniqueTokens.size > 0 ? extraTokens / candUniqueTokens.size : 0;
         if (extraTokens >= 2 && (extraRatio >= 0.5 || extraTokens >= tTokens.length)) {
           score -= extraTokens * 8 + 10;
@@ -444,11 +475,19 @@ var require_matching = __commonJS({
 // src/roketdizi/index.js
 var require_roketdizi = __commonJS({
   "src/roketdizi/index.js"(exports2, module2) {
-    var crypto;
+    var _nodeCrypto = null;
     try {
-      crypto = require("crypto");
+      _nodeCrypto = require("crypto");
     } catch (_) {
-      crypto = null;
+    }
+    function getCryptoJS() {
+      if (typeof globalThis !== "undefined" && globalThis.CryptoJS) return globalThis.CryptoJS;
+      if (typeof CryptoJS !== "undefined") return CryptoJS;
+      try {
+        return require("crypto-js");
+      } catch (_) {
+        return null;
+      }
     }
     var cheerio = require("cheerio-without-node-native");
     var { sortStreamsByQuality, filterHighestQuality } = require_quality();
@@ -487,6 +526,9 @@ var require_roketdizi = __commonJS({
           var titleEn = "";
           var origTitle = "";
           var year = "";
+          var originCountries = [];
+          var origLanguage = "";
+          var imdbId = cleanId.startsWith("tt") ? cleanId : null;
           if (cleanId.startsWith("tt")) {
             var findRes = yield fetchWithTimeout(
               "https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id",
@@ -502,6 +544,8 @@ var require_roketdizi = __commonJS({
                 origTitle = item.original_title || item.original_name || "";
                 var date = item.release_date || item.first_air_date || "";
                 if (date) year = String(date).split("-")[0];
+                if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
+                if (item.original_language) origLanguage = item.original_language;
               }
             }
           } else {
@@ -520,6 +564,16 @@ var require_roketdizi = __commonJS({
               origTitle = tData.original_title || tData.original_name || origTitle;
               var tDate = tData.release_date || tData.first_air_date || "";
               if (!year && tDate) year = String(tDate).split("-")[0];
+              if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
+                originCountries = tData.origin_country;
+              } else if (Array.isArray(tData.production_countries) && tData.production_countries.length > 0) {
+                originCountries = tData.production_countries.map(function(p) {
+                  return p.iso_3166_1;
+                }).filter(Boolean);
+              }
+              if (tData.original_language) origLanguage = tData.original_language;
+              if (tData.external_ids && tData.external_ids.imdb_id) imdbId = tData.external_ids.imdb_id;
+              else if (tData.imdb_id) imdbId = tData.imdb_id;
             }
             var enRes = yield fetchWithTimeout(
               "https://api.themoviedb.org/3/" + endpoint + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=en-US",
@@ -532,6 +586,8 @@ var require_roketdizi = __commonJS({
               if (!origTitle) origTitle = enData.original_title || enData.original_name || "";
               var enDate = enData.release_date || enData.first_air_date || "";
               if (!year && enDate) year = String(enDate).split("-")[0];
+              if (!origLanguage && enData.original_language) origLanguage = enData.original_language;
+              if (!imdbId && enData.external_ids && enData.external_ids.imdb_id) imdbId = enData.external_ids.imdb_id;
             }
           }
           var title = titleTr || titleEn || origTitle;
@@ -541,11 +597,24 @@ var require_roketdizi = __commonJS({
             titleEn,
             origTitle,
             numericId,
-            year
+            year,
+            originCountries,
+            origLanguage,
+            imdbId
           };
         } catch (e) {
           if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
-          return { title: "", titleTr: "", titleEn: "", origTitle: "", numericId: id, year: "" };
+          return {
+            title: "",
+            titleTr: "",
+            titleEn: "",
+            origTitle: "",
+            numericId: id,
+            year: "",
+            originCountries: [],
+            origLanguage: "",
+            imdbId: typeof id === "string" && id.startsWith("tt") ? id.split(":")[0] : null
+          };
         }
       });
     }
@@ -671,25 +740,60 @@ var require_roketdizi = __commonJS({
     }
     function decryptPlayer(enc) {
       if (!enc || !enc.ciphertext || !enc.iv || !enc.salt || !enc.k) return null;
-      try {
-        var key = crypto.pbkdf2Sync(Buffer.from(enc.k, "utf8"), Buffer.from(enc.salt, "hex"), 999, 32, "sha512");
-        var decipher = crypto.createDecipheriv("aes-256-cbc", key, Buffer.from(enc.iv, "hex"));
-        var decrypted = Buffer.concat([
-          decipher.update(Buffer.from(enc.ciphertext, "base64")),
-          decipher.final()
-        ]).toString("utf8");
-        return decrypted.trim();
-      } catch (_) {
-        return null;
+      var CJS = getCryptoJS();
+      if (CJS && CJS.PBKDF2 && CJS.AES && CJS.enc) {
+        try {
+          var saltWa = CJS.enc.Hex.parse(enc.salt);
+          var ivWa = CJS.enc.Hex.parse(enc.iv);
+          var hasher = CJS.algo && CJS.algo.SHA512 || "SHA512";
+          var keyWa = CJS.PBKDF2(enc.k, saltWa, { keySize: 8, iterations: 999, hasher });
+          var mode = CJS.mode && CJS.mode.CBC || "CBC";
+          var padding = CJS.pad && CJS.pad.Pkcs7 || "Pkcs7";
+          var decWa = CJS.AES.decrypt(enc.ciphertext, keyWa, { iv: ivWa, mode, padding });
+          var result = decWa.toString(CJS.enc.Utf8);
+          if (result) return result.trim();
+        } catch (_) {
+        }
       }
+      if (_nodeCrypto && typeof Buffer !== "undefined") {
+        try {
+          var key = _nodeCrypto.pbkdf2Sync(Buffer.from(enc.k, "utf8"), Buffer.from(enc.salt, "hex"), 999, 32, "sha512");
+          var decipher = _nodeCrypto.createDecipheriv("aes-256-cbc", key, Buffer.from(enc.iv, "hex"));
+          var decrypted = Buffer.concat([
+            decipher.update(Buffer.from(enc.ciphertext, "base64")),
+            decipher.final()
+          ]).toString("utf8");
+          return decrypted.trim();
+        } catch (_) {
+        }
+      }
+      return null;
     }
     function solveNpGate(gate) {
       if (!gate || !gate.n) return null;
+      var nonce = gate.n;
       var cmiy = String.fromCharCode(75, 83, 102, 76, 107, 83, 86, 73, 77, 84);
-      for (var i = 0; i <= 1e6; i++) {
-        var hash = crypto.createHash("sha256").update(i + "|" + cmiy + "|" + gate.n).digest();
-        if (hash.readUInt32BE(20) >>> 20 === 0) {
-          return i.toString();
+      var CJS = getCryptoJS();
+      if (CJS && CJS.SHA256) {
+        try {
+          for (var i = 0; i <= 1e4; i++) {
+            var hashWa = CJS.SHA256(i + "|" + cmiy + "|" + nonce);
+            if (hashWa && hashWa.words && hashWa.words[5] >>> 20 === 0) {
+              return String(i);
+            }
+          }
+        } catch (_) {
+        }
+      }
+      if (_nodeCrypto && typeof Buffer !== "undefined") {
+        try {
+          for (var j = 0; j <= 1e4; j++) {
+            var hash = _nodeCrypto.createHash("sha256").update(j + "|" + cmiy + "|" + nonce).digest();
+            if (hash.readUInt32BE(20) >>> 20 === 0) {
+              return j.toString();
+            }
+          }
+        } catch (_) {
         }
       }
       return null;
@@ -911,6 +1015,10 @@ var require_roketdizi = __commonJS({
         try {
           mediaType = mediaType === "series" ? "tv" : mediaType;
           var info = yield resolveTmdbInfo(tmdbId, mediaType, signal);
+          var isPureTurkishSeries = mediaType !== "movie" && info.origLanguage === "tr" && Array.isArray(info.originCountries) && info.originCountries.length === 1 && info.originCountries[0] === "TR";
+          if (isPureTurkishSeries) {
+            return [];
+          }
           var searchQueries = [...new Set([info.titleTr, info.titleEn, info.origTitle, info.title].filter(Boolean))];
           if (searchQueries.length === 0) {
             return [];
@@ -946,6 +1054,14 @@ var require_roketdizi = __commonJS({
           var pageHtml = "";
           if (pageRes.ok) {
             pageHtml = yield pageRes.text();
+          }
+          var targetImdb = info.imdbId || (typeof tmdbId === "string" && tmdbId.startsWith("tt") ? tmdbId.split(":")[0] : null);
+          if (targetImdb && pageHtml) {
+            var imdbMatch = pageHtml.match(/imdb\.com\/title\/(tt\d+)/i) || pageHtml.match(/"(?:mj)?imdb(?:href)?"\s*:\s*"[^"]*?(tt\d+)/i);
+            var pageImdb = imdbMatch ? imdbMatch[1].toLowerCase() : null;
+            if (pageImdb && pageImdb !== targetImdb.toLowerCase()) {
+              return [];
+            }
           }
           if (mediaType === "tv" && (!pageHtml || !pageHtml.includes("enc"))) {
             var seriesUrl = BASE_URL + "/dizi/" + tvSlug;
@@ -1075,7 +1191,17 @@ var require_roketdizi = __commonJS({
     }
     var _origGetStreams;
     if (typeof module2 !== "undefined" && module2.exports) {
-      module2.exports = wrapAll({ getStreams }, cfgReady);
+      module2.exports = wrapAll({
+        getStreams,
+        decryptPlayer,
+        solveNpGate,
+        getCryptoJS
+      }, cfgReady);
+      module2.exports._raw = {
+        decryptPlayer,
+        solveNpGate,
+        getCryptoJS
+      };
     }
     if (typeof globalThis !== "undefined") {
       globalThis.getStreams = getStreams;

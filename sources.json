@@ -157,6 +157,18 @@
       "enabled": true,
       "observation": "unverified",
       "playback": "unverified"
+    },
+    {
+      "key": "roketdizi",
+      "id": "mum_roketdizi",
+      "name": "RoketDizi",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
     }
   ]
 }

@@ -158,6 +158,18 @@
         "tv"
       ],
       "enabled": true
+    },
+    {
+      "id": "mum_roketdizi",
+      "name": "RoketDizi",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_roketdizi.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
     }
   ]
 }

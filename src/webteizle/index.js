@@ -1,6 +1,6 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
-const { fetchWithTimeout } = require("../shared/http.js");
+const { fetchWithTimeout, combineSignals } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
 const { pickBestCandidate, normalizeText } = require("../shared/matching.js");
 const { unpack } = require("../shared/unpacker.js");
@@ -181,7 +181,7 @@ async function searchWithMatching(queryTitle, targetYear, isTV, signal) {
   }
 }
 
-// ── Fast-Path Paralel Sayfa Bulucu ────────────────────────────────────
+// ── Fast-Path Paralel Sayfa Bulucu (0-Saniye Fast-Fail Abort Destekli) ──
 async function findFilmPage(info, isTV, signal) {
   var cacheKey = (isTV ? 'tv:' : 'movie:') + (info.numericId || info.titleTr || info.titleEn);
   if (PAGE_CACHE.has(cacheKey)) {
@@ -212,37 +212,64 @@ async function findFilmPage(info, isTV, signal) {
     }
   }
 
+  // 0-Saniye Fast-Fail Kontrolörü: İlk 403 alındığında diğer paralel istekleri derhal sonlandırır
+  var earlyAbortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var effectiveSignal = signal;
+  if (earlyAbortCtrl && typeof combineSignals === 'function') {
+    effectiveSignal = signal ? combineSignals([signal, earlyAbortCtrl.signal]) : earlyAbortCtrl.signal;
+  }
+
   var hadBlock = false;
 
-  // 1. Doğrudan slug denemelerini eşzamanlı (paralel) yap
-  var directResults = await Promise.all(directUrls.map(async function (url) {
-    try {
-      var r = await fetchWithTimeout(url, { headers: HEADERS, signal: signal }, 3500);
-      if (r.status === 403) {
-        hadBlock = true;
-        return null;
-      }
-      if (r.ok) {
-        var html = await r.text();
-        if (html.indexOf('data-id') !== -1 || html.indexOf('id="wip"') !== -1 || (isTV && html.indexOf('/dizi/') !== -1)) {
-          return { url: url, html: html };
+  try {
+    // 1. Doğrudan slug denemelerini eşzamanlı (paralel) yap
+    var directResults = await Promise.all(directUrls.map(async function (url) {
+      try {
+        var r = await fetchWithTimeout(url, { headers: HEADERS, signal: effectiveSignal }, 3000);
+        if (r.status === 403) {
+          hadBlock = true;
+          if (earlyAbortCtrl) {
+            try { earlyAbortCtrl.abort(); } catch (_) {}
+          }
+          return null;
+        }
+        if (r.ok) {
+          var html = await r.text();
+          if (html.indexOf('data-id') !== -1 || html.indexOf('id="wip"') !== -1 || (isTV && html.indexOf('/dizi/') !== -1)) {
+            return { url: url, html: html };
+          }
+        }
+      } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+          if (hadBlock) return null;
+          throw e;
+        }
+        if (e && e.code === 'HTTP_BLOCKED') {
+          hadBlock = true;
+          if (earlyAbortCtrl) {
+            try { earlyAbortCtrl.abort(); } catch (_) {}
+          }
         }
       }
-    } catch (e) {
-      if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
-        throw e;
-      }
-      if (e && e.code === 'HTTP_BLOCKED') {
-        hadBlock = true;
-      }
-    }
-    return null;
-  }));
+      return null;
+    }));
 
-  var directRes = directResults.find(Boolean) || null;
-  if (directRes) {
-    PAGE_CACHE.set(cacheKey, { data: directRes, time: Date.now() });
-    return directRes;
+    if (hadBlock) {
+      throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
+    }
+
+    var directRes = directResults.find(Boolean) || null;
+    if (directRes) {
+      PAGE_CACHE.set(cacheKey, { data: directRes, time: Date.now() });
+      return directRes;
+    }
+  } catch (err) {
+    if (hadBlock || (err && err.code === 'HTTP_BLOCKED')) {
+      throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
+    }
+    if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT' || (signal && signal.aborted))) {
+      throw err;
+    }
   }
 
   // 2. Arama motoru fallback
@@ -255,17 +282,13 @@ async function findFilmPage(info, isTV, signal) {
         return searchRes;
       }
     } catch (e) {
+      if (e && e.code === 'HTTP_BLOCKED') {
+        throw e;
+      }
       if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
         throw e;
       }
-      if (e && e.code === 'HTTP_BLOCKED') {
-        hadBlock = true;
-      }
     }
-  }
-
-  if (hadBlock) {
-    throw new ProviderError('HTTP_BLOCKED', 'Webteİzle Cloudflare Challenge', 'network', 403);
   }
 
   return null;
@@ -363,7 +386,7 @@ async function fetchEmbedIframe(embedId, signal) {
   }
 }
 
-// ── Sibnet MP4 Çözücü (Instant Playback / En Hızlı Akış) ───────────────
+// ── Sibnet MP4 Çözücü (Blokaj Korumalı) ───────────────────────────────
 async function fetchSibnetStream(iframeUrl, signal) {
   try {
     var fullUrl = iframeUrl.startsWith('//') ? 'https:' + iframeUrl : iframeUrl;
@@ -373,9 +396,9 @@ async function fetchSibnetStream(iframeUrl, signal) {
         'Referer': 'https://video.sibnet.ru/'
       },
       signal: signal
-    }, 4500);
+    }, 3500);
 
-    if (!r.ok) return null;
+    if (r.status === 403 || !r.ok) return null; // 403 durumunda sessizce elenir, oynatıcı kilitlenmez
     var html = await r.text();
 
     var m = html.match(/["'](\/shell\.php\?videoid=\d+)["']/i)
@@ -395,7 +418,7 @@ async function fetchSibnetStream(iframeUrl, signal) {
   }
 }
 
-// ── VidMoly M3U8 Çözücü (Unpacker Destekli) ───────────────────────────
+// ── VidMoly M3U8 Çözücü (Unpacker & Segment Proxy Başlıkları) ───────────
 async function fetchVidMolyStream(iframeUrl, signal) {
   var fullUrl = iframeUrl.startsWith('//') ? 'https:' + iframeUrl : iframeUrl;
   fullUrl = fullUrl.replace('vidmoly.to', 'vidmoly.biz').replace('vidmoly.net', 'vidmoly.biz').replace('vidmoly.me', 'vidmoly.biz');
@@ -464,7 +487,7 @@ async function fetchFilemoonStream(iframeUrl, signal) {
   }
 }
 
-// ── Embed İşleyici ────────────────────────────────────────────────────
+// ── Embed İşleyici (Oynatıcı Segment Başlıkları ile) ───────────────────
 async function processEmbed(embedData, dilAd, movieTitle, signal) {
   var baslik = (embedData.baslik || '').toLowerCase();
   if (TURNSTILE_BLOCKED_HOSTS.some(function (h) { return baslik.includes(h); })) return null;
@@ -476,14 +499,41 @@ async function processEmbed(embedData, dilAd, movieTitle, signal) {
   var pName = (embedData.baslik || 'Kaynak');
   var q = embedData.kalite || '1080p';
 
-  // 1. Sibnet: Doğrudan MP4 (En Hızlı Başlatma)
+  // 1. VidMoly: HLS Master Stream (Segment Proxy Header Tanımlı)
+  if (src.indexOf('vidmoly') !== -1) {
+    pName = 'VidMoly';
+    var vm = await fetchVidMolyStream(src, signal);
+    if (vm) {
+      var vmHeaders = {
+        'User-Agent': HEADERS['User-Agent'],
+        'Referer': 'https://vidmoly.biz/',
+        'Origin': 'https://vidmoly.biz'
+      };
+      return {
+        name: movieTitle,
+        title: '⌜ Webteİzle ⌟ | ' + pName + ' | ' + flag + dilAd,
+        url: vm.url,
+        quality: q,
+        type: 'hls',
+        headers: vmHeaders,
+        behaviorHints: {
+          notWebReady: true,
+          proxyHeaders: { request: vmHeaders }
+        },
+        provider: 'webteizle'
+      };
+    }
+  }
+
+  // 2. Sibnet: Doğrudan MP4
   if (src.indexOf('sibnet') !== -1) {
     pName = 'Sibnet';
     var sib = await fetchSibnetStream(src, signal);
     if (sib) {
       var sibHeaders = {
         'User-Agent': HEADERS['User-Agent'],
-        'Referer': sib.referer
+        'Referer': 'https://video.sibnet.ru/',
+        'Origin': 'https://video.sibnet.ru'
       };
       return {
         name: movieTitle,
@@ -496,30 +546,6 @@ async function processEmbed(embedData, dilAd, movieTitle, signal) {
         behaviorHints: {
           notWebReady: true,
           proxyHeaders: { request: sibHeaders }
-        },
-        provider: 'webteizle'
-      };
-    }
-  }
-
-  // 2. VidMoly: HLS Master Stream
-  if (src.indexOf('vidmoly') !== -1) {
-    pName = 'VidMoly';
-    var vm = await fetchVidMolyStream(src, signal);
-    if (vm) {
-      var vmHeaders = {
-        'User-Agent': HEADERS['User-Agent'],
-        'Referer': vm.referer
-      };
-      return {
-        name: movieTitle,
-        title: '⌜ Webteİzle ⌟ | ' + pName + ' | ' + flag + dilAd,
-        url: vm.url,
-        quality: q,
-        headers: vmHeaders,
-        behaviorHints: {
-          notWebReady: true,
-          proxyHeaders: { request: vmHeaders }
         },
         provider: 'webteizle'
       };

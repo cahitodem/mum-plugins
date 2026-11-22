@@ -536,7 +536,7 @@ var require_webteizle = __commonJS({
   "src/webteizle/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
-    var { fetchWithTimeout } = require_http();
+    var { fetchWithTimeout, combineSignals } = require_http();
     var { ProviderError } = require_errors();
     var { pickBestCandidate, normalizeText } = require_matching();
     var { unpack } = require_unpacker();
@@ -716,36 +716,66 @@ var require_webteizle = __commonJS({
             directUrls.push(BASE_URL + "/izle/altyazi/" + slugEn);
           }
         }
+        var earlyAbortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+        var effectiveSignal = signal;
+        if (earlyAbortCtrl && typeof combineSignals === "function") {
+          effectiveSignal = signal ? combineSignals([signal, earlyAbortCtrl.signal]) : earlyAbortCtrl.signal;
+        }
         var hadBlock = false;
-        var directResults = yield Promise.all(directUrls.map(function(url) {
-          return __async(this, null, function* () {
-            try {
-              var r = yield fetchWithTimeout(url, { headers: HEADERS, signal }, 3500);
-              if (r.status === 403) {
-                hadBlock = true;
-                return null;
-              }
-              if (r.ok) {
-                var html = yield r.text();
-                if (html.indexOf("data-id") !== -1 || html.indexOf('id="wip"') !== -1 || isTV && html.indexOf("/dizi/") !== -1) {
-                  return { url, html };
+        try {
+          var directResults = yield Promise.all(directUrls.map(function(url) {
+            return __async(this, null, function* () {
+              try {
+                var r = yield fetchWithTimeout(url, { headers: HEADERS, signal: effectiveSignal }, 3e3);
+                if (r.status === 403) {
+                  hadBlock = true;
+                  if (earlyAbortCtrl) {
+                    try {
+                      earlyAbortCtrl.abort();
+                    } catch (_) {
+                    }
+                  }
+                  return null;
+                }
+                if (r.ok) {
+                  var html = yield r.text();
+                  if (html.indexOf("data-id") !== -1 || html.indexOf('id="wip"') !== -1 || isTV && html.indexOf("/dizi/") !== -1) {
+                    return { url, html };
+                  }
+                }
+              } catch (e) {
+                if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || signal && signal.aborted)) {
+                  if (hadBlock) return null;
+                  throw e;
+                }
+                if (e && e.code === "HTTP_BLOCKED") {
+                  hadBlock = true;
+                  if (earlyAbortCtrl) {
+                    try {
+                      earlyAbortCtrl.abort();
+                    } catch (_) {
+                    }
+                  }
                 }
               }
-            } catch (e) {
-              if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || signal && signal.aborted)) {
-                throw e;
-              }
-              if (e && e.code === "HTTP_BLOCKED") {
-                hadBlock = true;
-              }
-            }
-            return null;
-          });
-        }));
-        var directRes = directResults.find(Boolean) || null;
-        if (directRes) {
-          PAGE_CACHE.set(cacheKey, { data: directRes, time: Date.now() });
-          return directRes;
+              return null;
+            });
+          }));
+          if (hadBlock) {
+            throw new ProviderError("HTTP_BLOCKED", "Webte\u0130zle Cloudflare Challenge", "network", 403);
+          }
+          var directRes = directResults.find(Boolean) || null;
+          if (directRes) {
+            PAGE_CACHE.set(cacheKey, { data: directRes, time: Date.now() });
+            return directRes;
+          }
+        } catch (err) {
+          if (hadBlock || err && err.code === "HTTP_BLOCKED") {
+            throw new ProviderError("HTTP_BLOCKED", "Webte\u0130zle Cloudflare Challenge", "network", 403);
+          }
+          if (err && (err.name === "AbortError" || err.message === "TIMEOUT" || signal && signal.aborted)) {
+            throw err;
+          }
         }
         var queries = [info.titleTr, info.titleEn].filter(Boolean);
         for (var q of queries) {
@@ -756,16 +786,13 @@ var require_webteizle = __commonJS({
               return searchRes;
             }
           } catch (e) {
+            if (e && e.code === "HTTP_BLOCKED") {
+              throw e;
+            }
             if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || signal && signal.aborted)) {
               throw e;
             }
-            if (e && e.code === "HTTP_BLOCKED") {
-              hadBlock = true;
-            }
           }
-        }
-        if (hadBlock) {
-          throw new ProviderError("HTTP_BLOCKED", "Webte\u0130zle Cloudflare Challenge", "network", 403);
         }
         return null;
       });
@@ -860,8 +887,8 @@ var require_webteizle = __commonJS({
               "Referer": "https://video.sibnet.ru/"
             },
             signal
-          }, 4500);
-          if (!r.ok) return null;
+          }, 3500);
+          if (r.status === 403 || !r.ok) return null;
           var html = yield r.text();
           var m = html.match(/["'](\/shell\.php\?videoid=\d+)["']/i) || html.match(/player\.src\(\s*\[\s*\{\s*src:\s*["']([^"']+)["']/i) || html.match(/src:\s*["']([^"']+\.mp4[^"']*)["']/i);
           if (m) {
@@ -953,13 +980,38 @@ var require_webteizle = __commonJS({
         var flag = dilAd.includes("Dublaj") ? "\u{1F1F9}\u{1F1F7} " : "\u{1F310} ";
         var pName = embedData.baslik || "Kaynak";
         var q = embedData.kalite || "1080p";
+        if (src.indexOf("vidmoly") !== -1) {
+          pName = "VidMoly";
+          var vm = yield fetchVidMolyStream(src, signal);
+          if (vm) {
+            var vmHeaders = {
+              "User-Agent": HEADERS["User-Agent"],
+              "Referer": "https://vidmoly.biz/",
+              "Origin": "https://vidmoly.biz"
+            };
+            return {
+              name: movieTitle,
+              title: "\u231C Webte\u0130zle \u231F | " + pName + " | " + flag + dilAd,
+              url: vm.url,
+              quality: q,
+              type: "hls",
+              headers: vmHeaders,
+              behaviorHints: {
+                notWebReady: true,
+                proxyHeaders: { request: vmHeaders }
+              },
+              provider: "webteizle"
+            };
+          }
+        }
         if (src.indexOf("sibnet") !== -1) {
           pName = "Sibnet";
           var sib = yield fetchSibnetStream(src, signal);
           if (sib) {
             var sibHeaders = {
               "User-Agent": HEADERS["User-Agent"],
-              "Referer": sib.referer
+              "Referer": "https://video.sibnet.ru/",
+              "Origin": "https://video.sibnet.ru"
             };
             return {
               name: movieTitle,
@@ -972,28 +1024,6 @@ var require_webteizle = __commonJS({
               behaviorHints: {
                 notWebReady: true,
                 proxyHeaders: { request: sibHeaders }
-              },
-              provider: "webteizle"
-            };
-          }
-        }
-        if (src.indexOf("vidmoly") !== -1) {
-          pName = "VidMoly";
-          var vm = yield fetchVidMolyStream(src, signal);
-          if (vm) {
-            var vmHeaders = {
-              "User-Agent": HEADERS["User-Agent"],
-              "Referer": vm.referer
-            };
-            return {
-              name: movieTitle,
-              title: "\u231C Webte\u0130zle \u231F | " + pName + " | " + flag + dilAd,
-              url: vm.url,
-              quality: q,
-              headers: vmHeaders,
-              behaviorHints: {
-                notWebReady: true,
-                proxyHeaders: { request: vmHeaders }
               },
               provider: "webteizle"
             };

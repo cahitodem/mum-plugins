@@ -570,7 +570,7 @@ var require_webteizle = __commonJS({
     var PAGE_CACHE = /* @__PURE__ */ new Map();
     var CACHE_TTL_TMDB = 24 * 60 * 60 * 1e3;
     var CACHE_TTL_PAGE = 2 * 60 * 60 * 1e3;
-    var TURNSTILE_BLOCKED_HOSTS = ["pixel", "netu", "dzen"];
+    var SLOW_OR_BLOCKED_HOSTS = ["ok.ru", "okru", "netu", "dzen"];
     function fetchTmdbInfo(tmdbId, mediaType, signal) {
       return __async(this, null, function* () {
         var cleanId = String(tmdbId || "").trim();
@@ -700,13 +700,13 @@ var require_webteizle = __commonJS({
             });
           });
           var directResults = yield Promise.all(directTasks);
-          if (hadBlock) {
-            throw new ProviderError("HTTP_BLOCKED", "Webte\u0130zle Cloudflare Challenge", "network", 403);
-          }
           var directFound = directResults.find(Boolean);
           if (directFound) {
             PAGE_CACHE.set(cacheKey, { data: directFound, time: Date.now() });
             return directFound;
+          }
+          if (hadBlock) {
+            throw new ProviderError("HTTP_BLOCKED", "Webte\u0130zle Cloudflare Challenge", "network", 403);
           }
         }
         var foundSlug = null;
@@ -751,7 +751,8 @@ var require_webteizle = __commonJS({
         if (foundSlug) {
           var testUrls2 = [
             BASE_URL + "/izle/dublaj/" + foundSlug,
-            BASE_URL + "/izle/altyazi/" + foundSlug
+            BASE_URL + "/izle/altyazi/" + foundSlug,
+            BASE_URL + "/hakkinda/" + foundSlug
           ];
           for (var u of testUrls2) {
             try {
@@ -824,9 +825,26 @@ var require_webteizle = __commonJS({
           if (vm && vm[1]) {
             return { provider: "vidmoly", id: vm[1] };
           }
+          var px = html.match(/pixel\s*\(\s*['"]([^'"]+)['"]/i) || html.match(/\/player\/pixel\.asp\?v=([^"'\s&]+)/i) || html.match(/pixeldrain\.com\/(?:u|api\/file)\/([a-zA-Z0-9_-]+)/i);
+          if (px && px[1]) {
+            var pxId = px[1].split("|")[0].trim();
+            return { provider: "pixel", id: pxId };
+          }
+          var fm = html.match(/filemoon\s*\(\s*['"]([^'"]+)['"]/i);
+          if (fm && fm[1]) {
+            return { provider: "filemoon", id: fm[1] };
+          }
+          var sib = html.match(/sibnet\s*\(\s*['"]([^'"]+)['"]/i);
+          if (sib && sib[1]) {
+            return { provider: "sibnet", url: "https://video.sibnet.ru/shell.php?videoid=" + sib[1] };
+          }
           var ifr = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
           if (ifr && ifr[1]) {
             var src = ifr[1];
+            if (src.includes("pixeldrain.com")) {
+              var pdM = src.match(/pixeldrain\.com\/(?:u|api\/file)\/([a-zA-Z0-9_-]+)/);
+              if (pdM) return { provider: "pixel", id: pdM[1] };
+            }
             if (src.includes("sibnet.ru")) {
               return { provider: "sibnet", url: src.startsWith("//") ? "https:" + src : src };
             }
@@ -835,12 +853,10 @@ var require_webteizle = __commonJS({
               if (idM) return { provider: "vidmoly", id: idM[1] };
             }
             if (src.includes("filemoon") || src.includes("byse")) {
+              var fmM = src.match(/\/e\/([a-zA-Z0-9_-]+)/) || src.match(/v=([a-zA-Z0-9_-]+)/);
+              if (fmM) return { provider: "filemoon", id: fmM[1] };
               return { provider: "filemoon", url: src.startsWith("//") ? "https:" + src : src };
             }
-          }
-          var sib = html.match(/sibnet\s*\(\s*['"]([^'"]+)['"]/i);
-          if (sib && sib[1]) {
-            return { provider: "sibnet", url: "https://video.sibnet.ru/shell.php?videoid=" + sib[1] };
           }
           return null;
         } catch (e) {
@@ -848,6 +864,21 @@ var require_webteizle = __commonJS({
           return null;
         }
       });
+    }
+    function getPixeldrainStream(pixelId) {
+      if (!pixelId) return null;
+      var cleanId = pixelId.split("|")[0].trim();
+      if (!cleanId) return null;
+      var streamUrl = "https://pixeldrain.com/api/file/" + cleanId;
+      return {
+        url: streamUrl,
+        type: "mp4",
+        format: "mp4",
+        headers: {
+          "User-Agent": HEADERS["User-Agent"],
+          "Referer": "https://pixeldrain.com/"
+        }
+      };
     }
     function fetchSibnetStream(iframeUrl, signal) {
       return __async(this, null, function* () {
@@ -913,6 +944,44 @@ var require_webteizle = __commonJS({
         return null;
       });
     }
+    function fetchFilemoonStream(filemoonIdOrUrl, signal) {
+      return __async(this, null, function* () {
+        if (!filemoonIdOrUrl) return null;
+        var targetUrl = filemoonIdOrUrl.startsWith("http") ? filemoonIdOrUrl : "https://bysezoxexe.com/e/" + filemoonIdOrUrl;
+        try {
+          var r = yield fetchWithTimeout(targetUrl, {
+            headers: {
+              "User-Agent": HEADERS["User-Agent"],
+              "Referer": BASE_URL + "/"
+            },
+            signal
+          }, 4e3);
+          if (!r.ok) return null;
+          var html = yield r.text();
+          var m = html.match(/sources\s*:\s*\[\{\s*file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)['"]/i) || html.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)['"]/i);
+          if (!m && typeof unpack === "function") {
+            try {
+              var unpacked = unpack(html);
+              if (unpacked) {
+                m = unpacked.match(/sources\s*:\s*\[\{\s*file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)['"]/i) || unpacked.match(/file\s*:\s*['"](https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)['"]/i);
+              }
+            } catch (_) {
+            }
+          }
+          if (m && m[1]) {
+            var isM3u8 = m[1].includes(".m3u8");
+            return {
+              url: m[1],
+              type: isM3u8 ? "hls" : "mp4",
+              referer: "https://bysezoxexe.com/"
+            };
+          }
+          return null;
+        } catch (_) {
+          return null;
+        }
+      });
+    }
     function getStreams(tmdbId, mediaType, season, episode, options) {
       return __async(this, null, function* () {
         const signal = options && options.signal;
@@ -948,37 +1017,48 @@ var require_webteizle = __commonJS({
             allAlts.push({ alt: a, dil: "TR Altyaz\u0131", flag: "\u{1F310} " });
           });
           if (allAlts.length === 0) return [];
-          var sortedAlts = allAlts.filter(function(item) {
+          var validAlts = allAlts.filter(function(item) {
             var b = (item.alt.baslik || "").toLowerCase();
-            return !TURNSTILE_BLOCKED_HOSTS.some(function(h) {
+            return !SLOW_OR_BLOCKED_HOSTS.some(function(h) {
               return b.includes(h);
             });
           });
-          var targetAlts = sortedAlts.slice(0, 4);
+          validAlts.sort(function(a, b) {
+            function getScore(item) {
+              var name = (item.alt.baslik || "").toLowerCase();
+              if (name.includes("pixel")) return 100;
+              if (name.includes("sibnet")) return 90;
+              if (name.includes("vidmoly")) return 80;
+              if (name.includes("filemoon")) return 70;
+              return 10;
+            }
+            return getScore(b) - getScore(a);
+          });
+          var targetAlts = validAlts.slice(0, 5);
           var resolveTasks = targetAlts.map(function(item) {
             return __async(this, null, function* () {
               try {
                 var embed = yield fetchEmbedData(item.alt.id, signal);
                 if (!embed) return null;
-                if (embed.provider === "vidmoly") {
-                  var stream = yield fetchVidMolyStream(embed.id, signal);
-                  if (stream && stream.url) {
-                    var vmHeaders = {
+                var q = item.alt.kalitesi === 0 ? "4K" : item.alt.kalitesi === 1 ? "1080p" : "720p";
+                if (embed.provider === "pixel") {
+                  var px = getPixeldrainStream(embed.id);
+                  if (px && px.url) {
+                    var pxHeaders = {
                       "User-Agent": HEADERS["User-Agent"],
-                      "Referer": stream.referer,
-                      "Origin": stream.referer.replace(/\/+$/, "")
+                      "Referer": "https://pixeldrain.com/"
                     };
-                    var q = item.alt.kalitesi === 0 ? "4K" : item.alt.kalitesi === 1 ? "1080p" : "720p";
                     return {
                       name: movieName,
-                      title: "\u231C Webte\u0130zle \u231F | VidMoly | " + item.flag + item.dil,
-                      url: stream.url,
+                      title: "\u231C Webte\u0130zle \u231F | Pixel MP4 | " + item.flag + item.dil,
+                      url: px.url,
                       quality: q,
-                      type: "hls",
-                      headers: vmHeaders,
+                      format: "mp4",
+                      type: "mp4",
+                      headers: pxHeaders,
                       behaviorHints: {
                         notWebReady: true,
-                        proxyHeaders: { request: vmHeaders }
+                        proxyHeaders: { request: pxHeaders }
                       },
                       provider: "webteizle"
                     };
@@ -992,18 +1072,64 @@ var require_webteizle = __commonJS({
                       "Referer": sib.referer,
                       "Origin": "https://video.sibnet.ru"
                     };
-                    var qSib = item.alt.kalitesi === 0 ? "4K" : item.alt.kalitesi === 1 ? "1080p" : "720p";
                     return {
                       name: movieName,
-                      title: "\u231C Webte\u0130zle \u231F | Sibnet | " + item.flag + item.dil,
+                      title: "\u231C Webte\u0130zle \u231F | Sibnet MP4 | " + item.flag + item.dil,
                       url: sib.url,
-                      quality: qSib,
+                      quality: q,
                       format: "mp4",
                       type: "mp4",
                       headers: sibHeaders,
                       behaviorHints: {
                         notWebReady: true,
                         proxyHeaders: { request: sibHeaders }
+                      },
+                      provider: "webteizle"
+                    };
+                  }
+                }
+                if (embed.provider === "vidmoly") {
+                  var vmStream = yield fetchVidMolyStream(embed.id, signal);
+                  if (vmStream && vmStream.url) {
+                    var vmHeaders = {
+                      "User-Agent": HEADERS["User-Agent"],
+                      "Referer": vmStream.referer,
+                      "Origin": vmStream.referer.replace(/\/+$/, "")
+                    };
+                    return {
+                      name: movieName,
+                      title: "\u231C Webte\u0130zle \u231F | VidMoly | " + item.flag + item.dil,
+                      url: vmStream.url,
+                      quality: q,
+                      type: "hls",
+                      headers: vmHeaders,
+                      behaviorHints: {
+                        notWebReady: true,
+                        proxyHeaders: { request: vmHeaders }
+                      },
+                      provider: "webteizle"
+                    };
+                  }
+                }
+                if (embed.provider === "filemoon") {
+                  var fmStream = yield fetchFilemoonStream(embed.id || embed.url, signal);
+                  if (fmStream && fmStream.url) {
+                    var fmHeaders = {
+                      "User-Agent": HEADERS["User-Agent"],
+                      "Referer": fmStream.referer,
+                      "Origin": fmStream.referer.replace(/\/+$/, "")
+                    };
+                    return {
+                      name: movieName,
+                      title: "\u231C Webte\u0130zle \u231F | FileMoon | " + item.flag + item.dil,
+                      url: fmStream.url,
+                      quality: q,
+                      format: fmStream.type,
+                      type: fmStream.type,
+                      headers: fmHeaders,
+                      behaviorHints: {
+                        notWebReady: true,
+                        proxyHeaders: { request: fmHeaders }
                       },
                       provider: "webteizle"
                     };

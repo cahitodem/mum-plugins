@@ -103,6 +103,55 @@ test('Webteİzle: Fast-path direct slug ile film sayfasını bulur ve Sibnet MP4
   assert.match(reports.at(-1), /sources-found/);
 });
 
+test('Webteİzle: Pixeldrain doğrudan yüksek hızlı MP4 akışını çözer ve öncelikli sıraya koyar', async () => {
+  const { provider, reports } = loadWebteizle(async (url) => {
+    if (url.includes('api.themoviedb.org')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ title: 'Guarding Stars', original_title: 'Guarding Stars', release_date: '2022-01-01' })
+      };
+    }
+    if (url.includes('/izle/dublaj/guarding-stars')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '<div id="wip" data-id="19479">Guarding Stars</div>'
+      };
+    }
+    if (url.includes('/izle/')) return { ok: false, status: 404, text: async () => '404' };
+    if (url.includes('/ajax/dataAlternatif3.asp')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'success',
+          data: [
+            { id: 'px1', baslik: 'Pixel', kalitesi: 1 },
+            { id: 'vm1', baslik: 'VidMoly', kalitesi: 1 }
+          ]
+        })
+      };
+    }
+    if (url.includes('/ajax/dataEmbed.asp')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '<div id="rv1">.</div><script>pixel("DqSn5zV4|xyz","rv1");</script>'
+      };
+    }
+    throw Error('Unexpected url: ' + url);
+  });
+
+  const streams = await provider.getStreams('tt6611324', 'movie');
+  assert.ok(Array.isArray(streams));
+  assert.equal(streams.length, 1);
+  assert.equal(streams[0].url, 'https://pixeldrain.com/api/file/DqSn5zV4');
+  assert.equal(streams[0].type, 'mp4');
+  assert.match(streams[0].title, /Pixel MP4/);
+  assert.match(reports.at(-1), /sources-found/);
+});
+
 test('Webteİzle: VidMoly unpacker şifreli scriptten M3U8 master akışını çözer', async () => {
   const { provider, reports } = loadWebteizle(async (url) => {
     if (url.includes('api.themoviedb.org')) {

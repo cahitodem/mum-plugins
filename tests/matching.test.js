@@ -97,3 +97,25 @@ test('matching: The Odyssey (2026) vs Cosmos: A Spacetime Odyssey (2014) MUST be
   const matched = pickBestCandidate(candidates, 'The Odyssey', '2026');
   assert.equal(matched, null, 'Cosmos must never match The Odyssey');
 });
+
+test('matching: Malcolm in the Middle (2000) vs Malcolm in the Middle: Life\'s Still Unfair (2026) MUST be rejected by year mismatch', () => {
+  const result = calculateMatchScore('Malcolm in the Middle', '2000', "Malcolm in the Middle: Life's Still Unfair", '/malcolm-in-the-middle-lifes-still-unfair', '2026');
+  assert.equal(result.matched, false);
+  assert.match(result.reason, /year_mismatch/);
+});
+
+test('matching: Malcolm in the Middle vs Malcolm in the Middle: Life\'s Still Unfair MUST be rejected even without year (subtitle penalty)', () => {
+  const result = calculateMatchScore('Malcolm in the Middle', null, "Malcolm in the Middle: Life's Still Unfair", '/malcolm-in-the-middle-lifes-still-unfair', null);
+  assert.equal(result.matched, false, 'Life\'s Still Unfair must be rejected due to heavy extra token / subtitle penalty');
+});
+
+test('matching: pickBestCandidate rejects Malcolm in the Middle: Life\'s Still Unfair candidate', () => {
+  const candidates = [
+    { title: "Malcolm in the Middle: Life's Still Unfair", slug: '/malcolm-in-the-middle-lifes-still-unfair', year: '2026' }
+  ];
+  const matchedWithYear = pickBestCandidate(candidates, 'Malcolm in the Middle', '2000');
+  assert.equal(matchedWithYear, null);
+
+  const matchedWithoutYear = pickBestCandidate(candidates, 'Malcolm in the Middle', null);
+  assert.equal(matchedWithoutYear, null);
+});

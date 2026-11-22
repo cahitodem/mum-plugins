@@ -327,7 +327,12 @@ var require_matching = __commonJS({
         if (tTokens.indexOf(tok) === -1) extraTokens++;
       });
       if (extraTokens > 0) {
-        score -= Math.min(20, extraTokens * 5);
+        var extraRatio = candUniqueTokens.size > 0 ? extraTokens / candUniqueTokens.size : 0;
+        if (extraTokens >= 2 && (extraRatio >= 0.5 || extraTokens >= tTokens.length)) {
+          score -= extraTokens * 8 + 10;
+        } else {
+          score -= extraTokens * 6;
+        }
       }
       if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
         var yDiff2 = Math.abs(targetY - candY);

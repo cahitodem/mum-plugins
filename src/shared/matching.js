@@ -104,14 +104,20 @@ function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candY
 
   var score = coverage * 70;
 
-  // Ekstra kelime cezası: Aday başlığında hedefe ait olmayan fazladan kelimeler varsa hafifçe puan kır
+  // Ekstra kelime cezası: Aday başlığında hedefe ait olmayan fazladan kelimeler varsa puan kır
   var candUniqueTokens = new Set(tokenize(candTitle));
   var extraTokens = 0;
   candUniqueTokens.forEach(function(tok) {
     if (tTokens.indexOf(tok) === -1) extraTokens++;
   });
   if (extraTokens > 0) {
-    score -= Math.min(20, extraTokens * 5);
+    // Eğer adayın kelimelerinin %50 veya daha fazlası hedefte yoksa veya ekstra kelime sayısı hedeften fazlaysa ağır ceza ver (alt başlık / spinoff koruması)
+    var extraRatio = candUniqueTokens.size > 0 ? (extraTokens / candUniqueTokens.size) : 0;
+    if (extraTokens >= 2 && (extraRatio >= 0.5 || extraTokens >= tTokens.length)) {
+      score -= (extraTokens * 8 + 10);
+    } else {
+      score -= (extraTokens * 6);
+    }
   }
 
   // Yıl Bonusu

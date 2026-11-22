@@ -311,6 +311,163 @@ var require_errors = __commonJS({
   }
 });
 
+// src/shared/matching.js
+var require_matching = __commonJS({
+  "src/shared/matching.js"(exports2, module2) {
+    var STOP_WORDS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "with",
+      "by",
+      "bir",
+      "ve",
+      "ile",
+      "icin",
+      "de",
+      "da",
+      "izle",
+      "dizi",
+      "dizisi",
+      "film",
+      "filmi",
+      "bolum",
+      "sezon",
+      "hd",
+      "full"
+    ]);
+    function normalizeText(str) {
+      if (!str) return "";
+      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function tokenize(str) {
+      var norm = normalizeText(str);
+      if (!norm) return [];
+      return norm.split(/\s+/).filter(function(w) {
+        return w.length > 1 && !STOP_WORDS.has(w);
+      });
+    }
+    function cleanSlug(slug) {
+      if (!slug) return "";
+      try {
+        var last = String(slug).split("/").filter(Boolean).pop() || "";
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+      } catch (_) {
+        return String(slug).replace(/-/g, " ");
+      }
+    }
+    function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candYear, options) {
+      var opts = options || {};
+      var minCoverage = opts.minCoverage !== void 0 ? opts.minCoverage : 0.75;
+      var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
+      var tNorm = normalizeText(targetTitle);
+      var cNorm = normalizeText(candTitle);
+      var sClean = cleanSlug(candSlug);
+      var sNorm = normalizeText(sClean);
+      if (!tNorm || !cNorm && !sNorm) {
+        return { matched: false, score: 0, reason: "empty_input" };
+      }
+      var targetY = parseInt(targetYear, 10);
+      var candY = parseInt(candYear, 10);
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var diff = Math.abs(targetY - candY);
+        if (diff > 1) {
+          return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (cNorm === tNorm || sNorm === tNorm) {
+        var exactScore = 100;
+        if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+          var yDiff = Math.abs(targetY - candY);
+          if (yDiff === 0) exactScore += 25;
+          else if (yDiff === 1) exactScore += 10;
+        }
+        return { matched: true, score: exactScore, reason: "exact_title_match" };
+      }
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokens = new Set(cTokensList);
+      var matchCount = 0;
+      for (var i = 0; i < tTokens.length; i++) {
+        if (cTokens.has(tTokens[i])) {
+          matchCount++;
+        }
+      }
+      var coverage = tTokens.length > 0 ? matchCount / tTokens.length : 0;
+      if (coverage < minCoverage) {
+        return {
+          matched: false,
+          score: 0,
+          reason: "low_coverage_" + Math.round(coverage * 100) + "pct"
+        };
+      }
+      var score = coverage * 70;
+      var candUniqueTokens = new Set(tokenize(candTitle));
+      var extraTokens = 0;
+      candUniqueTokens.forEach(function(tok) {
+        if (tTokens.indexOf(tok) === -1) extraTokens++;
+      });
+      if (extraTokens > 0) {
+        var extraRatio = candUniqueTokens.size > 0 ? extraTokens / candUniqueTokens.size : 0;
+        if (extraTokens >= 2 && (extraRatio >= 0.5 || extraTokens >= tTokens.length)) {
+          score -= extraTokens * 8 + 10;
+        } else {
+          score -= extraTokens * 6;
+        }
+      }
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var yDiff2 = Math.abs(targetY - candY);
+        if (yDiff2 === 0) score += 20;
+        else if (yDiff2 === 1) score += 10;
+      }
+      if (score >= minScore) {
+        return { matched: true, score, reason: "token_match" };
+      }
+      return { matched: false, score, reason: "score_below_threshold" };
+    }
+    function pickBestCandidate(candidates, targetTitle, targetYear, options) {
+      if (!Array.isArray(candidates) || candidates.length === 0) return null;
+      if (!targetTitle) return null;
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (!cand) continue;
+        var cTitle = cand.title || cand.name || cand.baslik || cand.orijinalBaslik || "";
+        var cSlug = cand.slug || cand.url || cand.href || "";
+        var cYear = cand.year || cand.yil || "";
+        if (!cYear) {
+          var ym = (String(cTitle) + " " + String(cSlug) + " " + String(cand.meta || "")).match(/\b(19\d\d|20\d\d)\b/);
+          if (ym) cYear = ym[1];
+        }
+        var res = calculateMatchScore(targetTitle, targetYear, cTitle, cSlug, cYear, options);
+        if (res.matched && res.score > bestScore) {
+          bestScore = res.score;
+          best = cand;
+        }
+      }
+      return best;
+    }
+    module2.exports = {
+      STOP_WORDS,
+      normalizeText,
+      tokenize,
+      cleanSlug,
+      calculateMatchScore,
+      pickBestCandidate
+    };
+  }
+});
+
 // src/diziyou/index.js
 var require_diziyou = __commonJS({
   "src/diziyou/index.js"(exports2, module2) {
@@ -318,6 +475,7 @@ var require_diziyou = __commonJS({
     var { loadConfig, val, wrapAll } = require_config2();
     var { fetchWithTimeout } = require_http();
     var { ProviderError } = require_errors();
+    var { pickBestCandidate, calculateMatchScore } = require_matching();
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -349,6 +507,7 @@ var require_diziyou = __commonJS({
           let numericId = null;
           let title = "";
           let origTitle = "";
+          let year = "";
           if (cleanId.startsWith("tt")) {
             const findRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal }, 8e3);
             if (findRes.ok) {
@@ -358,28 +517,31 @@ var require_diziyou = __commonJS({
                 numericId = item.id;
                 title = item.name || "";
                 origTitle = item.original_name || "";
+                if (item.first_air_date) {
+                  year = String(item.first_air_date).split("-")[0];
+                }
               }
             }
           } else {
             numericId = cleanId;
           }
-          if (numericId && (!title || !origTitle)) {
+          if (numericId && (!title || !origTitle || !year)) {
             const tRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal }, 8e3);
             if (tRes.ok) {
               const tData = yield tRes.json();
               title = tData.name || title;
               origTitle = tData.original_name || origTitle;
+              if (!year && tData.first_air_date) {
+                year = String(tData.first_air_date).split("-")[0];
+              }
             }
           }
-          return { title, origTitle, numericId };
+          return { title, origTitle, numericId, year };
         } catch (e) {
           if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
-          return { title: "", origTitle: "", numericId: id };
+          return { title: "", origTitle: "", numericId: id, year: "" };
         }
       });
-    }
-    function normalizeTitle(value) {
-      return String(value || "").toLowerCase().replace(/[ıİ]/g, "i").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[^a-z0-9]+/g, " ").trim();
     }
     function isEpisodeHref(href) {
       return /-\d+-sezon-\d+-bolum(?:\/|$)/i.test(String(href || ""));
@@ -396,35 +558,37 @@ var require_diziyou = __commonJS({
       });
       return result;
     }
-    function findShowHref($, candidates) {
-      var wanted = candidates.map(normalizeTitle).filter(Boolean);
-      var best = null, bestScore = 0;
+    function parseShowCandidates($, baseUrl) {
+      var candidates = [];
+      var seen = /* @__PURE__ */ Object.create(null);
       $("#content a[href], a[href]").each(function() {
         var href = $(this).attr("href") || "";
-        if (!href || isEpisodeHref(href) || /\/(?:kategori|dizi-arsivi|tag|author)\//i.test(href)) return;
+        if (!href || isEpisodeHref(href) || /\/(?:kategori|dizi-arsivi|tag|author|uye-ol|hakkimizda|iletisim|dmca|gizlilik|wp-login|son-eklenenler)\b/i.test(href)) return;
         var absolute;
         try {
-          absolute = new URL(href, BASE_URL).href;
+          absolute = new URL(href, baseUrl).href;
         } catch (e) {
           return;
         }
-        if (absolute.indexOf(BASE_URL + "/") !== 0 || /[?#]/.test(absolute)) return;
+        if (absolute.indexOf(baseUrl + "/") !== 0 || /[?#]/.test(absolute)) return;
         var pathSlug = absolute.split("/").filter(Boolean).pop() || "";
-        var text = $(this).text().trim() || $(this).find("img").attr("alt") || "";
-        var score = 0;
-        wanted.forEach(function(title) {
-          var slug = normalizeTitle(pathSlug.replace(/\d+$/, "").replace(/-/g, " "));
-          var label = normalizeTitle(text);
-          if (slug === title || label === title) score = Math.max(score, 100);
-          else if (slug.indexOf(title) === 0 || label.indexOf(title) === 0) score = Math.max(score, 75);
-          else if (title.indexOf(slug) === 0 && slug.length >= 5) score = Math.max(score, 60);
-        });
-        if (score > bestScore) {
-          best = absolute;
-          bestScore = score;
+        if (!pathSlug || pathSlug === "www.diziyou.love" || pathSlug === "diziyou.love") return;
+        var text = $(this).attr("title") || $(this).find("#dizi-ismi, .dizi-ismi").text().trim() || $(this).text().trim() || $(this).find("img").attr("alt") || "";
+        if (!text && !pathSlug) return;
+        var candYear = "";
+        var yearMatch = (text + " " + pathSlug).match(/\b(19\d\d|20\d\d)\b/);
+        if (yearMatch) candYear = yearMatch[1];
+        if (!seen[absolute]) {
+          seen[absolute] = true;
+          candidates.push({
+            title: text || pathSlug.replace(/\d+$/, "").replace(/-/g, " "),
+            slug: pathSlug,
+            href: absolute,
+            year: candYear
+          });
         }
       });
-      return bestScore >= 60 ? best : null;
+      return candidates;
     }
     function parsePlayerPage(playerHtml, playerUrl) {
       var $ = cheerio.load(playerHtml);
@@ -469,11 +633,11 @@ var require_diziyou = __commonJS({
           const info = yield resolveTmdbInfo(tmdbId, mediaType, signal);
           const trTitle = (info.title || "").trim();
           const orgTitle = (info.origTitle || "").trim();
+          const targetYear = info.year || "";
           const displayTitle = trTitle || orgTitle || "Dizi";
           const searchCandidates = [trTitle];
           if (orgTitle && orgTitle !== trTitle) searchCandidates.push(orgTitle);
-          var episodeUrl = null;
-          var showUrl = null;
+          var bestCandidate = null;
           for (const q of searchCandidates) {
             if (!q) continue;
             const searchUrl = `${BASE_URL}/?s=` + encodeURIComponent(q);
@@ -481,15 +645,32 @@ var require_diziyou = __commonJS({
             if (!res.ok) continue;
             const html = yield res.text();
             const $ = cheerio.load(html);
-            episodeUrl = findEpisodeHref($, seasonNum, episodeNum);
-            if (episodeUrl) break;
-            showUrl = findShowHref($, [q, trTitle, orgTitle]);
-            if (showUrl) break;
+            const candidates = parseShowCandidates($, BASE_URL);
+            if (!candidates || candidates.length === 0) continue;
+            bestCandidate = pickBestCandidate(candidates, trTitle, targetYear, { minCoverage: 0.75, minScore: 50 });
+            if (!bestCandidate && orgTitle) {
+              bestCandidate = pickBestCandidate(candidates, orgTitle, targetYear, { minCoverage: 0.75, minScore: 50 });
+            }
+            if (bestCandidate) break;
           }
-          if (!episodeUrl && showUrl) {
-            const showRes = yield fetchWithTimeout(showUrl, { headers: WORKING_HEADERS, signal }, 8e3);
-            if (showRes.ok) episodeUrl = findEpisodeHref(cheerio.load(yield showRes.text()), seasonNum, episodeNum);
+          if (!bestCandidate || !bestCandidate.href) return [];
+          var showUrl = bestCandidate.href;
+          const showRes = yield fetchWithTimeout(showUrl, { headers: WORKING_HEADERS, signal }, 8e3);
+          if (!showRes.ok) return [];
+          const showHtml = yield showRes.text();
+          const $show = cheerio.load(showHtml);
+          if (targetYear) {
+            var metaText = $show(".dizimeta, .dizibilgi").text() || "";
+            var yMatch = metaText.match(/Yapım Yılı:\s*(\d{4})/i) || metaText.match(/\b(19\d\d|20\d\d)\b/);
+            if (yMatch) {
+              var pageYear = parseInt(yMatch[1], 10);
+              var tYear = parseInt(targetYear, 10);
+              if (!isNaN(pageYear) && !isNaN(tYear) && Math.abs(pageYear - tYear) > 1) {
+                return [];
+              }
+            }
           }
+          var episodeUrl = findEpisodeHref($show, seasonNum, episodeNum);
           if (!episodeUrl) return [];
           try {
             episodeUrl = new URL(episodeUrl, BASE_URL).href;

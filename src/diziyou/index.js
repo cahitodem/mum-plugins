@@ -2,6 +2,7 @@ const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { fetchWithTimeout } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
+const { pickBestCandidate, calculateMatchScore } = require("../shared/matching.js");
 
 var _cfgReady = null;
 function cfgReady() {
@@ -43,6 +44,7 @@ async function resolveTmdbInfo(id, mediaType, signal) {
     let numericId = null;
     let title = '';
     let origTitle = '';
+    let year = '';
 
     if (cleanId.startsWith('tt')) {
       const findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
@@ -53,25 +55,31 @@ async function resolveTmdbInfo(id, mediaType, signal) {
           numericId = item.id;
           title = item.name || '';
           origTitle = item.original_name || '';
+          if (item.first_air_date) {
+            year = String(item.first_air_date).split('-')[0];
+          }
         }
       }
     } else {
       numericId = cleanId;
     }
 
-    if (numericId && (!title || !origTitle)) {
+    if (numericId && (!title || !origTitle || !year)) {
       const tRes = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal: signal }, 8000);
       if (tRes.ok) {
         const tData = await tRes.json();
         title = tData.name || title;
         origTitle = tData.original_name || origTitle;
+        if (!year && tData.first_air_date) {
+          year = String(tData.first_air_date).split('-')[0];
+        }
       }
     }
 
-    return { title, origTitle, numericId };
+    return { title, origTitle, numericId, year };
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
-    return { title: '', origTitle: '', numericId: id };
+    return { title: '', origTitle: '', numericId: id, year: '' };
   }
 }
 
@@ -96,28 +104,45 @@ function findEpisodeHref($, seasonNum, episodeNum) {
   return result;
 }
 
-function findShowHref($, candidates) {
-  var wanted = candidates.map(normalizeTitle).filter(Boolean);
-  var best = null, bestScore = 0;
+/**
+ * Arama sonuçları sayfasındaki tüm potansiyel dizi kartlarını ve linklerini toplar.
+ * Bölüm bağlantılarını (isEpisodeHref) kesinlikle filtreler.
+ */
+function parseShowCandidates($, baseUrl) {
+  var candidates = [];
+  var seen = Object.create(null);
+
   $('#content a[href], a[href]').each(function() {
     var href = $(this).attr('href') || '';
-    if (!href || isEpisodeHref(href) || /\/(?:kategori|dizi-arsivi|tag|author)\//i.test(href)) return;
+    if (!href || isEpisodeHref(href) || /\/(?:kategori|dizi-arsivi|tag|author|uye-ol|hakkimizda|iletisim|dmca|gizlilik|wp-login|son-eklenenler)\b/i.test(href)) return;
+
     var absolute;
-    try { absolute = new URL(href, BASE_URL).href; } catch (e) { return; }
-    if (absolute.indexOf(BASE_URL + '/') !== 0 || /[?#]/.test(absolute)) return;
+    try { absolute = new URL(href, baseUrl).href; } catch (e) { return; }
+    if (absolute.indexOf(baseUrl + '/') !== 0 || /[?#]/.test(absolute)) return;
+
     var pathSlug = absolute.split('/').filter(Boolean).pop() || '';
-    var text = $(this).text().trim() || $(this).find('img').attr('alt') || '';
-    var score = 0;
-    wanted.forEach(function(title) {
-      var slug = normalizeTitle(pathSlug.replace(/\d+$/, '').replace(/-/g, ' '));
-      var label = normalizeTitle(text);
-      if (slug === title || label === title) score = Math.max(score, 100);
-      else if (slug.indexOf(title) === 0 || label.indexOf(title) === 0) score = Math.max(score, 75);
-      else if (title.indexOf(slug) === 0 && slug.length >= 5) score = Math.max(score, 60);
-    });
-    if (score > bestScore) { best = absolute; bestScore = score; }
+    if (!pathSlug || pathSlug === 'www.diziyou.love' || pathSlug === 'diziyou.love') return;
+
+    var text = $(this).attr('title') || $(this).find('#dizi-ismi, .dizi-ismi').text().trim() || $(this).text().trim() || $(this).find('img').attr('alt') || '';
+    // Yalnızca anlamlı metin veya slug içeren linkleri aday al
+    if (!text && !pathSlug) return;
+
+    var candYear = '';
+    var yearMatch = (text + ' ' + pathSlug).match(/\b(19\d\d|20\d\d)\b/);
+    if (yearMatch) candYear = yearMatch[1];
+
+    if (!seen[absolute]) {
+      seen[absolute] = true;
+      candidates.push({
+        title: text || pathSlug.replace(/\d+$/, '').replace(/-/g, ' '),
+        slug: pathSlug,
+        href: absolute,
+        year: candYear
+      });
+    }
   });
-  return bestScore >= 60 ? best : null;
+
+  return candidates;
 }
 
 function parsePlayerPage(playerHtml, playerUrl) {
@@ -155,14 +180,15 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
     const info = await resolveTmdbInfo(tmdbId, mediaType, signal);
     const trTitle = (info.title || '').trim();
     const orgTitle = (info.origTitle || '').trim();
+    const targetYear = info.year || '';
     const displayTitle = trTitle || orgTitle || 'Dizi';
 
     const searchCandidates = [trTitle];
     if (orgTitle && orgTitle !== trTitle) searchCandidates.push(orgTitle);
 
-    var episodeUrl = null;
-    var showUrl = null;
+    var bestCandidate = null;
 
+    // Arama sayfasından dizi adaylarını topla ve pickBestCandidate ile doğrula
     for (const q of searchCandidates) {
       if (!q) continue;
       const searchUrl = `${BASE_URL}/?s=` + encodeURIComponent(q);
@@ -170,20 +196,47 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
       if (!res.ok) continue;
       const html = await res.text();
       const $ = cheerio.load(html);
-      episodeUrl = findEpisodeHref($, seasonNum, episodeNum);
-      if (episodeUrl) break;
-      showUrl = findShowHref($, [q, trTitle, orgTitle]);
-      if (showUrl) break;
+
+      const candidates = parseShowCandidates($, BASE_URL);
+      if (!candidates || candidates.length === 0) continue;
+
+      bestCandidate = pickBestCandidate(candidates, trTitle, targetYear, { minCoverage: 0.75, minScore: 50 });
+      if (!bestCandidate && orgTitle) {
+        bestCandidate = pickBestCandidate(candidates, orgTitle, targetYear, { minCoverage: 0.75, minScore: 50 });
+      }
+      if (bestCandidate) break;
     }
 
-    if (!episodeUrl && showUrl) {
-      const showRes = await fetchWithTimeout(showUrl, { headers: WORKING_HEADERS, signal: signal }, 8000);
-      if (showRes.ok) episodeUrl = findEpisodeHref(cheerio.load(await showRes.text()), seasonNum, episodeNum);
+    // Eşleşen dizi bulunamadıysa (ör. sitede dizi yoksa) güvenli şekilde sonlandır
+    if (!bestCandidate || !bestCandidate.href) return [];
+
+    var showUrl = bestCandidate.href;
+    const showRes = await fetchWithTimeout(showUrl, { headers: WORKING_HEADERS, signal: signal }, 8000);
+    if (!showRes.ok) return [];
+    const showHtml = await showRes.text();
+    const $show = cheerio.load(showHtml);
+
+    // Çift Emniyet Kilidi: Dizi detay sayfasından Yapım Yılı kontrolü
+    if (targetYear) {
+      var metaText = $show('.dizimeta, .dizibilgi').text() || '';
+      var yMatch = metaText.match(/Yapım Yılı:\s*(\d{4})/i) || metaText.match(/\b(19\d\d|20\d\d)\b/);
+      if (yMatch) {
+        var pageYear = parseInt(yMatch[1], 10);
+        var tYear = parseInt(targetYear, 10);
+        if (!isNaN(pageYear) && !isNaN(tYear) && Math.abs(pageYear - tYear) > 1) {
+          // Yıl uyuşmazlığı tespit edildi (örn. 2000 vs 2026), yanlış dizi!
+          return [];
+        }
+      }
     }
+
+    // Hedef bölümü yalnızca doğrulanmış dizi sayfası içerisinden ara
+    var episodeUrl = findEpisodeHref($show, seasonNum, episodeNum);
     if (!episodeUrl) return [];
 
     try { episodeUrl = new URL(episodeUrl, BASE_URL).href; } catch (e) { return []; }
     if (episodeUrl.indexOf(BASE_URL + '/') !== 0) return [];
+
     const epRes = await fetchWithTimeout(episodeUrl, { headers: WORKING_HEADERS, signal: signal }, 8000);
     if (!epRes.ok) return [];
     const epHtml = await epRes.text();

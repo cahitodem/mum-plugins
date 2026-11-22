@@ -306,6 +306,8 @@ test('RoketDizi: TV series stream resolution (multi-player dubbed & subtitled st
     // Header ve behaviorHints
     assert.equal(dubStream.headers.Referer, 'https://pichive.biz/e/dub2002');
     assert.equal(subStream.headers.Referer, 'https://pichive.biz/e/sub1001');
+    assert.equal(dubStream.headers.Origin, 'https://pichive.biz');
+    assert.equal(subStream.headers.Origin, 'https://pichive.biz');
     assert.equal(dubStream.behaviorHints.notWebReady, true);
     assert.deepEqual(dubStream.behaviorHints.proxyHeaders.request, dubStream.headers);
 
@@ -1242,6 +1244,96 @@ test('RoketDizi: TV series Mother, May I Murder? (TMDB 231824) resolves master H
     assert.equal(streams[0].subtitles[0].url, 'https://four.pichive.online/nsub.php?v=sub_tr&p=93');
     assert.equal(streams[0].subtitles[1].language, 'en');
     assert.equal(streams[0].subtitles[1].url, 'https://four.pichive.online/nsub.php?v=sub_en&p=93');
+    assert.equal(streams[0].headers.Origin, 'https://four.pichive.online', 'Stream headers must contain Origin');
+    assert.equal(streams[0].behaviorHints.proxyHeaders.request.Origin, 'https://four.pichive.online', 'Proxy headers must contain Origin');
+    assert.equal(streams[0].subtitles[0].headers.Origin, 'https://four.pichive.online', 'Subtitle headers must contain Origin');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+// ── 14. Canlı Pichive Dinamik NP_GATE Fonksiyon Çözümü ve Origin Header Doğrulaması ──
+
+test('RoketDizi: Live Pichive dynamic window.NP_GATE PoW execution and Origin header', async () => {
+  const encLive = createEncPayload('https://four.pichive.online/iframe.php?v=live_pichive_test', 'live_secret');
+
+  const liveHtml = `
+    <html>
+      <head>
+        <script>
+          window.NP_GATE = function(_ku,_nqi){var _wmmd=String.fromCharCode(45,116,72,55,82,88,103,87,73,55);for(var _xd=0;_xd<1e8;_xd++){var _eld=_xd.toString(10);if((_nqi(_ku+_wmmd+_eld+_wmmd)[0]&4095)===0)return _eld;}return "";};
+          window.NP_CONFIG = {
+            "gate": { "n": "eEuUmYcdkQWF", "b": 12 },
+            "sources": [
+              { "master": "https://four.pichive.online/nm.php?v=master_token_live" }
+            ],
+            "subtitles": [
+              { "label": "Türkçe", "lang": "tr", "url": "https://four.pichive.online/nsub.php?v=sub_tr" }
+            ]
+          };
+        </script>
+      </head>
+    </html>
+  `;
+
+  // solveNpGate doğrudan canlı HTML ile test
+  const sol = roketdizi._raw.solveNpGate({ n: 'eEuUmYcdkQWF', b: 12 }, liveHtml);
+  assert.equal(sol, '5024', 'Live Pichive dynamic NP_GATE function must resolve to 5024');
+
+  const fetchMock = async (url) => {
+    const u = String(url);
+    if (u.includes('api.themoviedb.org/3/movie/12345')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          title: 'Live Test Movie',
+          release_date: '2024-01-01'
+        })
+      };
+    }
+    if (u.includes('/film-izle?s=')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `<a href="/film/live-test/izle" aria-label="Live Test Movie, 2024">Live Test Movie</a>`
+      };
+    }
+    if (u === 'https://roketdizi.life/film/live-test/izle') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <script>
+            self.__next_f.push([1,"{\\"enc\\":{\\"ciphertext\\":\\"${encLive.ciphertext}\\",\\"iv\\":\\"${encLive.iv}\\",\\"salt\\":\\"${encLive.salt}\\"},\\"k\\":\\"${encLive.k}\\"}"]);
+          </script>
+        `
+      };
+    }
+    if (u === 'https://four.pichive.online/iframe.php?v=live_pichive_test') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => liveHtml
+      };
+    }
+    throw new Error('Unexpected URL: ' + u);
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = fetchMock;
+
+  try {
+    const streams = await roketdizi.getStreams('12345', 'movie');
+    assert.equal(streams.length, 1);
+    assert.equal(streams[0].url, 'https://four.pichive.online/nm.php?v=master_token_live&p=5024', 'Stream URL must include live solved p=5024');
+    assert.equal(streams[0].format, 'hls');
+    assert.equal(streams[0].isHls, true);
+    assert.equal(streams[0].headers.Origin, 'https://four.pichive.online');
+    assert.equal(streams[0].headers.Referer, 'https://four.pichive.online/iframe.php?v=live_pichive_test');
+    assert.equal(streams[0].behaviorHints.proxyHeaders.request.Origin, 'https://four.pichive.online');
+    assert.equal(streams[0].subtitles[0].url, 'https://four.pichive.online/nsub.php?v=sub_tr&p=5024');
+    assert.equal(streams[0].subtitles[0].headers.Origin, 'https://four.pichive.online');
   } finally {
     global.fetch = originalFetch;
   }

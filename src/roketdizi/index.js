@@ -331,31 +331,126 @@ function decryptPlayer(enc) {
 }
 
 // ── Pichive NP_GATE PoW Çözücü ve NP_CONFIG Ayrıştırıcı ───────────────
-function solveNpGate(gate) {
-  if (!gate || !gate.n) return null;
-  var nonce = gate.n;
-  var cmiy = String.fromCharCode(75, 83, 102, 76, 107, 83, 86, 73, 77, 84); // "KSfLkSVIMT"
+function solveNpGate(gate, html) {
+  var nonce = (gate && gate.n) ? gate.n : '';
+  if (!nonce && html) {
+    var nMatch = html.match(/"gate"\s*:\s*\{\s*"n"\s*:\s*"([a-zA-Z0-9_-]+)"/i) ||
+                 html.match(/["']?n["']?\s*:\s*["']([a-zA-Z0-9_-]+)["']/i);
+    if (nMatch) nonce = nMatch[1];
+  }
+  if (!nonce) return null;
 
-  // 1. Nuvio QuickJS / Browser ortamı: CryptoJS.SHA256
   var CJS = getCryptoJS();
-  if (CJS && CJS.SHA256) {
+
+  // 1. Canlı HTML içinde gerçek fonksiyon tanımlıysa (gövdesinde döngü içeren aktif fonksiyon)
+  if (html) {
     try {
-      for (var i = 0; i <= 100000; i++) {
-        var hashWa = CJS.SHA256(i + '|' + cmiy + '|' + nonce);
-        if (hashWa && hashWa.words && (hashWa.words[5] >>> 20) === 0) {
-          return String(i);
+      var gateFnMatch = html.match(/(?:window\.)?NP_GATE\s*=\s*(function[\s\S]*?\});\s*(?:window\.)?NP_CONFIG/) ||
+                        html.match(/window\.NP_GATE\s*=\s*(function\b[\s\S]*?);/);
+      if (gateFnMatch && /for\s*\(/.test(gateFnMatch[1])) {
+        var gateFn = new Function('return ' + gateFnMatch[1])();
+        if (typeof gateFn === 'function') {
+          // Nuvio QuickJS / Browser ortamı: CryptoJS
+          if (CJS && CJS.SHA256) {
+            var solCjs = gateFn(nonce, function(str) {
+              return CJS.SHA256(str).words;
+            });
+            if (solCjs != null && String(solCjs).length > 0) return String(solCjs);
+          }
+          // Node.js ortamı: crypto
+          if (_nodeCrypto && typeof Buffer !== 'undefined') {
+            var solNode = gateFn(nonce, function(str) {
+              var buf = _nodeCrypto.createHash('sha256').update(str).digest();
+              var words = [];
+              for (var w = 0; w < buf.length; w += 4) {
+                words.push(buf.readInt32BE(w));
+              }
+              return words;
+            });
+            if (solNode != null && String(solNode).length > 0) return String(solNode);
+          }
         }
       }
     } catch (_) {}
   }
 
-  // 2. Node.js ortamı: crypto.createHash
+  // 2. Canlı Pichive'de fonksiyon regex ile yakalanamadıysa ama yeni salt/parametreler varsa
+  var isNewGate = html && (html.includes('-tH7RXgWI7') || html.includes('45,116,72,55') || html.includes('45, 116, 72, 55'));
+  if (isNewGate) {
+    var salt = String.fromCharCode(45, 116, 72, 55, 82, 88, 103, 87, 73, 55); // "-tH7RXgWI7"
+    var bits = (gate && gate.b && gate.b > 0) ? gate.b : 12;
+    var mask = (1 << bits) - 1;
+
+    if (CJS && CJS.SHA256) {
+      try {
+        for (var i = 0; i <= 200000; i++) {
+          var istr = String(i);
+          var hashWa = CJS.SHA256(nonce + salt + istr + salt);
+          if (hashWa && hashWa.words && (hashWa.words[0] & mask) === 0) {
+            return istr;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (_nodeCrypto && typeof Buffer !== 'undefined') {
+      try {
+        for (var j = 0; j <= 200000; j++) {
+          var jstr = String(j);
+          var hBuf = _nodeCrypto.createHash('sha256').update(nonce + salt + jstr + salt).digest();
+          if ((hBuf.readInt32BE(0) & mask) === 0) {
+            return jstr;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 3. Standart / Eski Fallback (cmiy = "KSfLkSVIMT", words[5] >>> 20 === 0)
+  var cmiy = String.fromCharCode(75, 83, 102, 76, 107, 83, 86, 73, 77, 84); // "KSfLkSVIMT"
+  if (CJS && CJS.SHA256) {
+    try {
+      for (var k = 0; k <= 50000; k++) {
+        var hWaOld = CJS.SHA256(k + '|' + cmiy + '|' + nonce);
+        if (hWaOld && hWaOld.words && (hWaOld.words[5] >>> 20) === 0) {
+          return String(k);
+        }
+      }
+    } catch (_) {}
+  }
+
   if (_nodeCrypto && typeof Buffer !== 'undefined') {
     try {
-      for (var j = 0; j <= 100000; j++) {
-        var hash = _nodeCrypto.createHash('sha256').update(j + '|' + cmiy + '|' + nonce).digest();
-        if ((hash.readUInt32BE(20) >>> 20) === 0) {
-          return j.toString();
+      for (var l = 0; l <= 50000; l++) {
+        var hBufOld = _nodeCrypto.createHash('sha256').update(l + '|' + cmiy + '|' + nonce).digest();
+        if ((hBufOld.readUInt32BE(20) >>> 20) === 0) {
+          return l.toString();
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 4. Son çare: Yeni algoritma genel denemesi
+  var saltDef = String.fromCharCode(45, 116, 72, 55, 82, 88, 103, 87, 73, 55);
+  if (CJS && CJS.SHA256) {
+    try {
+      for (var m = 0; m <= 50000; m++) {
+        var mstr = String(m);
+        var hWaDef = CJS.SHA256(nonce + saltDef + mstr + saltDef);
+        if (hWaDef && hWaDef.words && (hWaDef.words[0] & 4095) === 0) {
+          return mstr;
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (_nodeCrypto && typeof Buffer !== 'undefined') {
+    try {
+      for (var n = 0; n <= 50000; n++) {
+        var nstr = String(n);
+        var hBufDef = _nodeCrypto.createHash('sha256').update(nonce + saltDef + nstr + saltDef).digest();
+        if ((hBufDef.readInt32BE(0) & 4095) === 0) {
+          return nstr;
         }
       }
     } catch (_) {}
@@ -448,9 +543,16 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
   // Doğrudan video akışı verilmişse doğrudan nesneyi oluştur
   if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(normalizedIframeUrl)) {
     var isDirectMp4 = normalizedIframeUrl.includes('.mp4');
+    var dOrigin = '';
+    try {
+      dOrigin = new URL(normalizedIframeUrl).origin;
+    } catch (_) {
+      dOrigin = BASE_URL;
+    }
     var dHeaders = {
       'User-Agent': WORKING_HEADERS['User-Agent'],
-      'Referer': BASE_URL + '/'
+      'Referer': BASE_URL + '/',
+      'Origin': dOrigin
     };
 
     return {
@@ -491,9 +593,9 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
     // NP_CONFIG ayrıştır
     var config = parseNpConfig(iframeHtml);
 
-    // NP_GATE PoW çözümle
+    // NP_GATE PoW çözümle (HTML ile dinamik çözümleme destekli)
     var gate = parseNpGate(iframeHtml, config);
-    var solution = solveNpGate(gate);
+    var solution = solveNpGate(gate, iframeHtml);
 
     var streamUrl = '';
     var tracks = [];
@@ -543,6 +645,19 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
     // PoW çözümünü akış URL'sine ekle
     var finalStreamUrl = appendSolution(streamUrl, solution);
 
+    var iframeOrigin = '';
+    try {
+      iframeOrigin = new URL(normalizedIframeUrl).origin;
+    } catch (_) {
+      iframeOrigin = 'https://four.pichive.online';
+    }
+
+    var sHeaders = {
+      'User-Agent': WORKING_HEADERS['User-Agent'],
+      'Referer': normalizedIframeUrl,
+      'Origin': iframeOrigin
+    };
+
     // Altyazıları biçimlendir
     var subtitles = [];
     for (var i = 0; i < tracks.length; i++) {
@@ -554,7 +669,9 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
           subtitles.push({
             url: appendSolution(fullSubUrl, solution),
             language: t.srclang || t.language || t.lang || t.label || 'tr',
-            label: t.label || t.title || 'Türkçe'
+            label: t.label || t.title || 'Türkçe',
+            format: 'vtt',
+            headers: sHeaders
           });
         }
       }
@@ -569,16 +686,13 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
           subtitles.push({
             url: appendSolution(sUrl, solution),
             language: 'tr',
-            label: 'Türkçe'
+            label: 'Türkçe',
+            format: 'vtt',
+            headers: sHeaders
           });
         }
       }
     }
-
-    var sHeaders = {
-      'User-Agent': WORKING_HEADERS['User-Agent'],
-      'Referer': normalizedIframeUrl
-    };
 
     var isMp4 = finalStreamUrl.includes('.mp4');
 

@@ -459,6 +459,8 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
       url: normalizedIframeUrl,
       quality: qualityLabel || '1080p',
       type: isDirectMp4 ? 'mp4' : 'hls',
+      format: isDirectMp4 ? 'mp4' : 'hls',
+      isHls: !isDirectMp4,
       headers: dHeaders,
       behaviorHints: {
         notWebReady: true,
@@ -586,6 +588,8 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
       url: finalStreamUrl,
       quality: qualityLabel || '1080p',
       type: isMp4 ? 'mp4' : 'hls',
+      format: isMp4 ? 'mp4' : 'hls',
+      isHls: !isMp4,
       headers: sHeaders,
       behaviorHints: {
         notWebReady: true,

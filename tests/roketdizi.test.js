@@ -308,6 +308,12 @@ test('RoketDizi: TV series stream resolution (multi-player dubbed & subtitled st
     assert.equal(subStream.headers.Referer, 'https://pichive.biz/e/sub1001');
     assert.equal(dubStream.behaviorHints.notWebReady, true);
     assert.deepEqual(dubStream.behaviorHints.proxyHeaders.request, dubStream.headers);
+
+    // format ve isHls alanları (Nuvio HLS demuxer seçimi için zorunlu)
+    assert.equal(dubStream.format, 'hls', 'Dublaj akışı format alanı hls olmalıdır');
+    assert.equal(dubStream.isHls, true, 'Dublaj akışı isHls true olmalıdır');
+    assert.equal(subStream.format, 'hls', 'Altyazılı akışı format alanı hls olmalıdır');
+    assert.equal(subStream.isHls, true, 'Altyazılı akışı isHls true olmalıdır');
   } finally {
     global.fetch = originalFetch;
   }
@@ -389,6 +395,10 @@ test('RoketDizi: Movie stream resolution (/film/<slug>/izle) routes properly', a
     assert.match(streams[0].title, /⌜ RoketDizi ⌟ \| RoketTV \| 🇹🇷 Türkçe Dublaj$/);
     assert.ok(!streams[0].title.includes('Sezon'), 'Film başlığında sezon/bölüm ifadesi olmamalıdır');
 
+    // format ve isHls alanları (Nuvio HLS demuxer seçimi için zorunlu)
+    assert.equal(streams[0].format, 'hls', 'Film akışı format alanı hls olmalıdır');
+    assert.equal(streams[0].isHls, true, 'Film akışı isHls true olmalıdır');
+
     // /film/ adresi çağrılmalı, asla /dizi/ çağrılmamalıdır
     assert.ok(requestedUrls.some(u => u.includes('/film/oppenheimer/izle')), '/film/oppenheimer/izle çağrılmış olmalıdır');
     assert.ok(!requestedUrls.some(u => u.includes('/dizi/')), 'Film sorgusunda /dizi/ çağrılmamalıdır');
@@ -440,6 +450,8 @@ test('RoketDizi: Direct video stream (mp4 / m3u8) without secondary iframe HTML'
     assert.equal(streams[0].url, 'https://directcdn.life/storage/video_direct1080.mp4');
     assert.equal(streams[0].type, 'mp4');
     assert.equal(streams[0].quality, '1080p');
+    assert.equal(streams[0].format, 'mp4', 'Doğrudan MP4 akışında format mp4 olmalıdır');
+    assert.equal(streams[0].isHls, false, 'Doğrudan MP4 akışında isHls false olmalıdır');
   } finally {
     global.fetch = originalFetch;
   }
@@ -717,6 +729,8 @@ test('RoketDizi: Bundle VM execution test from manifest.json scraper', async () 
   assert.equal(streams[0].url, 'https://pichive.biz/hls/vm_bundle/master.m3u8?p=93');
   assert.equal(streams[0].quality, '1080p');
   assert.equal(streams[0].provider, 'roketdizi');
+  assert.equal(streams[0].format, 'hls', 'Bundle VM akışında format hls olmalıdır');
+  assert.equal(streams[0].isHls, true, 'Bundle VM akışında isHls true olmalıdır');
 
   // 2. Adapter log/rapor kontrolü (sources-found bildirimi)
   const parsedReports = reports.map(r => {
@@ -887,6 +901,8 @@ test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR 
     assert.equal(streamsEp1.length, 1, 'Bölüm 1 için geçerli PoW çözümlü master HLS akışı dönmeli');
     assert.equal(streamsEp1[0].url, 'https://four.pichive.online/nm.php?v=friend_ep1_master&p=93');
     assert.equal(streamsEp1[0].type, 'hls');
+    assert.equal(streamsEp1[0].format, 'hls', 'nm.php akışında format hls olmalıdır');
+    assert.equal(streamsEp1[0].isHls, true, 'nm.php akışında isHls true olmalıdır');
     assert.equal(streamsEp1[0].provider, 'roketdizi');
     assert.equal(streamsEp1[0].headers.Referer, 'https://four.pichive.online/iframe.php?v=friend_ep1');
     assert.equal(streamsEp1[0].subtitles.length, 1);
@@ -898,6 +914,8 @@ test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR 
     assert.equal(streamsEp2.length, 1, '200 durumunda PoW çözülmüş m3u8 yayını dönmeli');
     assert.equal(streamsEp2[0].url, 'https://four.pichive.online/hls/friend_ep2/master.m3u8?p=93');
     assert.equal(streamsEp2[0].type, 'hls');
+    assert.equal(streamsEp2[0].format, 'hls', 'Bölüm 2 akışında format hls olmalıdır');
+    assert.equal(streamsEp2[0].isHls, true, 'Bölüm 2 akışında isHls true olmalıdır');
     assert.equal(streamsEp2[0].subtitles.length, 1);
     assert.equal(streamsEp2[0].subtitles[0].url, 'https://four.pichive.online/sub/tr.vtt?p=93');
   } finally {
@@ -910,6 +928,8 @@ test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR 
   assert.equal(bundledStreams.length, 1);
   assert.equal(bundledStreams[0].url, 'https://four.pichive.online/nm.php?v=friend_ep1_master&p=93');
   assert.equal(bundledStreams[0].type, 'hls');
+  assert.equal(bundledStreams[0].format, 'hls', 'Bundle adapter nm.php format hls olmalıdır');
+  assert.equal(bundledStreams[0].isHls, true, 'Bundle adapter nm.php isHls true olmalıdır');
   const lastReport = reports.map(r => {
     try { return JSON.parse(r.replace(/^\[MUM\]\s*/, '')); } catch (_) { return null; }
   }).filter(Boolean).at(-1);
@@ -1123,6 +1143,8 @@ test('RoketDizi: QuickJS / Nuvio runtime compatibility without Buffer and Node c
   assert.equal(streams.length, 1, 'Matrix için 1 adet HLS akışı bulunmalı');
   assert.equal(streams[0].url, 'https://four.pichive.online/hls/matrix/master.m3u8?p=93', 'PoW çözülmüş p=93 parametreli akış dönmeli');
   assert.equal(streams[0].type, 'hls');
+  assert.equal(streams[0].format, 'hls', 'QuickJS akışında format hls olmalıdır');
+  assert.equal(streams[0].isHls, true, 'QuickJS akışında isHls true olmalıdır');
   assert.equal(streams[0].provider, 'roketdizi');
 
   const lastReport = reports.map(r => {
@@ -1213,6 +1235,8 @@ test('RoketDizi: TV series Mother, May I Murder? (TMDB 231824) resolves master H
     assert.equal(streams.length, 1);
     assert.equal(streams[0].url, 'https://four.pichive.online/nm.php?v=mother_master_m3u8&p=93');
     assert.equal(streams[0].type, 'hls');
+    assert.equal(streams[0].format, 'hls', 'Mother nm.php format hls olmalıdır');
+    assert.equal(streams[0].isHls, true, 'Mother nm.php isHls true olmalıdır');
     assert.equal(streams[0].subtitles.length, 2);
     assert.equal(streams[0].subtitles[0].language, 'tr');
     assert.equal(streams[0].subtitles[0].url, 'https://four.pichive.online/nsub.php?v=sub_tr&p=93');

@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node build.js",
     "build:providers": "node build.js",
-    "test": "node --test tests/adapter.test.js tests/bundles.test.js tests/matching.test.js tests/cancellation.test.js",
+    "test": "node --test tests/adapter.test.js tests/bundles.test.js tests/matching.test.js tests/cancellation.test.js tests/yabancidizi.test.js",
     "check": "npm run build && npm test",
     "test:provider": "node scripts/probe.js"
   },

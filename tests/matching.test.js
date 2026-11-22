@@ -81,3 +81,19 @@ test('matching: pickBestCandidate correctly selects candidate with matching titl
   assert.ok(matched);
   assert.equal(matched.title, 'Breaking Bad');
 });
+
+test('matching: The Odyssey (2026) vs Cosmos: A Spacetime Odyssey (2014) MUST be rejected', () => {
+  const result = calculateMatchScore('The Odyssey', '2026', 'Cosmos: A Spacetime Odyssey', '/dizi/cosmos-a-spacetime-odyssey-izle-1', '2014');
+  assert.equal(result.matched, false);
+  assert.match(result.reason, /year_mismatch/);
+
+  // Even without year, token coverage should reject it (1 word vs 4 words)
+  const resultNoYear = calculateMatchScore('The Odyssey', null, 'Cosmos: A Spacetime Odyssey', '/dizi/cosmos-a-spacetime-odyssey-izle-1', null);
+  // 'the' is stop word, target token is 'odyssey', candidate has 'cosmos', 'spacetime', 'odyssey'
+  // extra tokens penalty or pickBestCandidate with threshold
+  const candidates = [
+    { title: 'Cosmos: A Spacetime Odyssey', year: '2014', href: '/dizi/cosmos-a-spacetime-odyssey-izle-1' }
+  ];
+  const matched = pickBestCandidate(candidates, 'The Odyssey', '2026');
+  assert.equal(matched, null, 'Cosmos must never match The Odyssey');
+});

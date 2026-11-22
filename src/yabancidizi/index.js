@@ -1,7 +1,26 @@
-const { sortStreamsByQuality } = require("../shared/quality.js");
+const { sortStreamsByQuality, getQualityScore } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
 const { fetchWithTimeout } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
+const { pickBestCandidate } = require("../shared/matching.js");
+
+function getResolutionScore(s) {
+    var score = getQualityScore(s);
+    return (score % 2 === 1) ? score - 1 : score;
+}
+
+function filterHighestQuality(streams) {
+    if (!Array.isArray(streams) || streams.length <= 1) return streams;
+    var maxRes = 0;
+    for (var i = 0; i < streams.length; i++) {
+        var res = getResolutionScore(streams[i]);
+        if (res > maxRes) maxRes = res;
+    }
+    if (maxRes === 0) return streams;
+    return streams.filter(function(s) {
+        return getResolutionScore(s) >= maxRes;
+    });
+}
 
 var _cfgReady = null;
 function cfgReady() {
@@ -57,40 +76,47 @@ async function resolveTmdbInfo(id, mediaType, signal) {
         var numericId = null;
         var title = '';
         var origTitle = '';
+        var year = '';
 
         if (cleanId.startsWith('tt')) {
-            var findRes = await safeFetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id', { signal });
+            var findRes = await safeFetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id&language=tr-TR', { signal });
             if (findRes.ok) {
                 var fData = await findRes.json();
-                var item = (mediaType === 'tv' || mediaType === 'series')
+                var isTv = (mediaType === 'tv' || mediaType === 'series');
+                var item = isTv
                     ? (fData.tv_results && fData.tv_results[0])
                     : (fData.movie_results && fData.movie_results[0]);
                 if (item) {
                     numericId = item.id;
                     title = item.name || item.title || '';
                     origTitle = item.original_name || item.original_title || '';
+                    var dateStr = item.first_air_date || item.release_date || '';
+                    if (dateStr) year = dateStr.slice(0, 4);
                 }
             }
         } else {
             numericId = cleanId;
         }
 
-        if (numericId && (!title || !origTitle)) {
-            var type = (mediaType === 'tv' || mediaType === 'series') ? 'tv' : 'movie';
+        if (numericId && (!title || !origTitle || !year)) {
+            var isTvType = (mediaType === 'tv' || mediaType === 'series');
+            var type = isTvType ? 'tv' : 'movie';
             var tRes = await safeFetch('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal });
             if (tRes.ok) {
                 var tData = await tRes.json();
                 title = tData.name || tData.title || title;
                 origTitle = tData.original_name || tData.original_title || origTitle;
+                var dateStr2 = tData.first_air_date || tData.release_date || '';
+                if (dateStr2) year = dateStr2.slice(0, 4);
             }
         }
 
-        return { title: title, origTitle: origTitle, numericId: numericId };
+        return { title: title, origTitle: origTitle, numericId: numericId, year: year };
     } catch (e) {
         if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
             throw e;
         }
-        return { title: '', origTitle: '', numericId: id };
+        return { title: '', origTitle: '', numericId: id, year: '' };
     }
 }
 
@@ -357,17 +383,17 @@ async function resolveVidmolyStreams(m3u8Url, langText, seenUrls, signal) {
     return streams;
 }
 
-async function extractStreamsFromEpisodePage(epUrl, signal) {
+async function extractStreamsFromPage(pageUrl, signal) {
     try {
-        var epRes = await safeFetch(epUrl, {
+        var pageRes = await safeFetch(pageUrl, {
             headers: {
                 'User-Agent': HEADERS['User-Agent'],
                 'Referer': BASE_URL + '/'
             },
             signal: signal
         });
-        if (!epRes.ok) return [];
-        var html = await epRes.text();
+        if (!pageRes.ok) return [];
+        var html = await pageRes.text();
 
         // 1. VidMoly download & embed links directly in page HTML
         var dlRegex = /<a[^>]+href=["'](https?:\/\/vidmoly\.[a-z0-9]+\/dl\/([a-zA-Z0-9_-]+))["'][^>]*>([\s\S]*?)<\/a>/gi;
@@ -449,6 +475,9 @@ async function extractStreamsFromEpisodePage(epUrl, signal) {
     }
 }
 
+var extractStreamsFromEpisodePage = extractStreamsFromPage;
+var extractStreamsFromMoviePage = extractStreamsFromPage;
+
 async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
     const signal = options && options.signal;
     try {
@@ -472,8 +501,9 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
             }
         }
 
-        var season = parseInt(seasonNum) || 1;
-        var episode = parseInt(episodeNum) || 1;
+        var isMovie = (mediaType === 'movie');
+        var season = isMovie ? 1 : (parseInt(seasonNum) || 1);
+        var episode = isMovie ? 1 : (parseInt(episodeNum) || 1);
 
         var info = await resolveTmdbInfo(tmdbIdOrArgs, mediaType, signal);
         var searchTitles = [info.origTitle, info.title].filter(Boolean);
@@ -487,42 +517,42 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
                     results = cat.metas.map(function(m) {
                         return {
                             s_name: m.name,
-                            s_link: m.id.replace('yabancidizi:show:', '')
+                            s_link: m.id.replace('yabancidizi:show:', ''),
+                            s_type: m.type === 'movie' ? '1' : '0'
                         };
                     });
                 }
             }
             if (results.length === 0) continue;
 
-            var cleanTarget = ultraClean(title);
-            var matchedShow = null;
+            // Content Type Isolation:
+            // If movie requested: only match s_type === '1' (movies)
+            // If tv requested: only match s_type === '0' or undefined (series)
+            var filteredResults = results.filter(function(r) {
+                if (isMovie) return r.s_type === '1';
+                return r.s_type === '0' || !r.s_type;
+            });
+            if (filteredResults.length === 0) continue;
 
-            for (var r of results) {
-                var rTitle = ultraClean(r.s_name);
-                if (rTitle === cleanTarget) {
-                    matchedShow = r;
-                    break;
-                }
-            }
+            var candidates = filteredResults.map(function(r) {
+                return {
+                    title: r.s_name,
+                    year: r.s_year || '',
+                    slug: r.s_link,
+                    href: isMovie ? ('/film/' + r.s_link) : ('/dizi/' + r.s_link),
+                    raw: r
+                };
+            });
 
-            if (!matchedShow) {
-                for (var r of results) {
-                    var rTitle = ultraClean(r.s_name);
-                    if (rTitle.includes(cleanTarget) || cleanTarget.includes(rTitle)) {
-                        matchedShow = r;
-                        break;
-                    }
-                }
-            }
+            var matched = pickBestCandidate(candidates, title, info.year, { minCoverage: 0.75, minScore: 50 });
+            if (!matched || !matched.raw) continue;
 
-            if (!matchedShow && results.length > 0) {
-                matchedShow = results[0];
-            }
+            var matchedShow = matched.raw;
+            var targetUrl = (isMovie || matchedShow.s_type === '1')
+                ? (BASE_URL + '/film/' + matchedShow.s_link)
+                : (BASE_URL + '/dizi/' + matchedShow.s_link + '/sezon-' + season + '/bolum-' + episode);
 
-            if (!matchedShow || !matchedShow.s_link) continue;
-
-            var targetEpUrl = BASE_URL + '/dizi/' + matchedShow.s_link + '/sezon-' + season + '/bolum-' + episode;
-            var streams = await extractStreamsFromEpisodePage(targetEpUrl, signal);
+            var streams = await extractStreamsFromPage(targetUrl, signal);
             if (streams.length > 0) return streams;
         }
 
@@ -535,12 +565,13 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, option
     }
 }
 
-// ── Universal Quality Sorter ──────────────────────────────────────────
+// ── Universal Quality Sorter & Highest Quality Filter ─────────────────
 if (typeof getStreams === "function") {
     var _origGetStreams = getStreams;
     getStreams = async function() {
         var res = await _origGetStreams.apply(this, arguments);
-        return sortStreamsByQuality(res);
+        var sorted = sortStreamsByQuality(res);
+        return filterHighestQuality(sorted);
     };
 }
 

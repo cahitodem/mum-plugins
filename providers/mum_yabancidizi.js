@@ -268,13 +268,182 @@ var require_errors = __commonJS({
   }
 });
 
+// src/shared/matching.js
+var require_matching = __commonJS({
+  "src/shared/matching.js"(exports2, module2) {
+    var STOP_WORDS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "with",
+      "by",
+      "bir",
+      "ve",
+      "ile",
+      "icin",
+      "de",
+      "da",
+      "izle",
+      "dizi",
+      "dizisi",
+      "film",
+      "filmi",
+      "bolum",
+      "sezon",
+      "hd",
+      "full"
+    ]);
+    function normalizeText(str) {
+      if (!str) return "";
+      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+    }
+    function tokenize(str) {
+      var norm = normalizeText(str);
+      if (!norm) return [];
+      return norm.split(/\s+/).filter(function(w) {
+        return w.length > 1 && !STOP_WORDS.has(w);
+      });
+    }
+    function cleanSlug(slug) {
+      if (!slug) return "";
+      try {
+        var last = String(slug).split("/").filter(Boolean).pop() || "";
+        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi.*$/i, "").replace(/-turkce.*$/i, "").replace(/-/g, " ").trim();
+      } catch (_) {
+        return String(slug).replace(/-/g, " ");
+      }
+    }
+    function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candYear, options) {
+      var opts = options || {};
+      var minCoverage = opts.minCoverage !== void 0 ? opts.minCoverage : 0.75;
+      var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
+      var tNorm = normalizeText(targetTitle);
+      var cNorm = normalizeText(candTitle);
+      var sClean = cleanSlug(candSlug);
+      var sNorm = normalizeText(sClean);
+      if (!tNorm || !cNorm && !sNorm) {
+        return { matched: false, score: 0, reason: "empty_input" };
+      }
+      var targetY = parseInt(targetYear, 10);
+      var candY = parseInt(candYear, 10);
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var diff = Math.abs(targetY - candY);
+        if (diff > 1) {
+          return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (cNorm === tNorm || sNorm === tNorm) {
+        var exactScore = 100;
+        if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+          var yDiff = Math.abs(targetY - candY);
+          if (yDiff === 0) exactScore += 25;
+          else if (yDiff === 1) exactScore += 10;
+        }
+        return { matched: true, score: exactScore, reason: "exact_title_match" };
+      }
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) tTokens = tNorm.split(/\s+/).filter(Boolean);
+      var cTokensList = tokenize(candTitle).concat(tokenize(sClean));
+      var cTokens = new Set(cTokensList);
+      var matchCount = 0;
+      for (var i = 0; i < tTokens.length; i++) {
+        if (cTokens.has(tTokens[i])) {
+          matchCount++;
+        }
+      }
+      var coverage = tTokens.length > 0 ? matchCount / tTokens.length : 0;
+      if (coverage < minCoverage) {
+        return {
+          matched: false,
+          score: 0,
+          reason: "low_coverage_" + Math.round(coverage * 100) + "pct"
+        };
+      }
+      var score = coverage * 70;
+      var candUniqueTokens = new Set(tokenize(candTitle));
+      var extraTokens = 0;
+      candUniqueTokens.forEach(function(tok) {
+        if (tTokens.indexOf(tok) === -1) extraTokens++;
+      });
+      if (extraTokens > 0) {
+        score -= Math.min(20, extraTokens * 5);
+      }
+      if (!isNaN(targetY) && !isNaN(candY) && targetY > 1900 && candY > 1900) {
+        var yDiff2 = Math.abs(targetY - candY);
+        if (yDiff2 === 0) score += 20;
+        else if (yDiff2 === 1) score += 10;
+      }
+      if (score >= minScore) {
+        return { matched: true, score, reason: "token_match" };
+      }
+      return { matched: false, score, reason: "score_below_threshold" };
+    }
+    function pickBestCandidate(candidates, targetTitle, targetYear, options) {
+      if (!Array.isArray(candidates) || candidates.length === 0) return null;
+      if (!targetTitle) return null;
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (!cand) continue;
+        var cTitle = cand.title || cand.name || cand.baslik || cand.orijinalBaslik || "";
+        var cSlug = cand.slug || cand.url || cand.href || "";
+        var cYear = cand.year || cand.yil || "";
+        if (!cYear) {
+          var ym = (String(cTitle) + " " + String(cSlug) + " " + String(cand.meta || "")).match(/\b(19\d\d|20\d\d)\b/);
+          if (ym) cYear = ym[1];
+        }
+        var res = calculateMatchScore(targetTitle, targetYear, cTitle, cSlug, cYear, options);
+        if (res.matched && res.score > bestScore) {
+          bestScore = res.score;
+          best = cand;
+        }
+      }
+      return best;
+    }
+    module2.exports = {
+      STOP_WORDS,
+      normalizeText,
+      tokenize,
+      cleanSlug,
+      calculateMatchScore,
+      pickBestCandidate
+    };
+  }
+});
+
 // src/yabancidizi/index.js
 var require_yabancidizi = __commonJS({
   "src/yabancidizi/index.js"(exports2, module2) {
-    var { sortStreamsByQuality } = require_quality();
+    var { sortStreamsByQuality, getQualityScore } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
     var { fetchWithTimeout } = require_http();
     var { ProviderError } = require_errors();
+    var { pickBestCandidate } = require_matching();
+    function getResolutionScore(s) {
+      var score = getQualityScore(s);
+      return score % 2 === 1 ? score - 1 : score;
+    }
+    function filterHighestQuality(streams) {
+      if (!Array.isArray(streams) || streams.length <= 1) return streams;
+      var maxRes = 0;
+      for (var i = 0; i < streams.length; i++) {
+        var res = getResolutionScore(streams[i]);
+        if (res > maxRes) maxRes = res;
+      }
+      if (maxRes === 0) return streams;
+      return streams.filter(function(s) {
+        return getResolutionScore(s) >= maxRes;
+      });
+    }
     var _cfgReady = null;
     function cfgReady() {
       if (!_cfgReady) {
@@ -305,10 +474,6 @@ var require_yabancidizi = __commonJS({
         return res;
       });
     }
-    function ultraClean(str) {
-      if (!str) return "";
-      return str.toString().toLowerCase().replace(/[ıİ]/g, "i").replace(/[üÜ]/g, "u").replace(/[öÖ]/g, "o").replace(/[şŞ]/g, "s").replace(/[ğĞ]/g, "g").replace(/[çÇ]/g, "c").replace(/[^a-z0-9]/g, "").trim();
-    }
     function resolveTmdbInfo(id, mediaType, signal) {
       return __async(this, null, function* () {
         try {
@@ -317,35 +482,42 @@ var require_yabancidizi = __commonJS({
           var numericId = null;
           var title = "";
           var origTitle = "";
+          var year = "";
           if (cleanId.startsWith("tt")) {
-            var findRes = yield safeFetch("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", { signal });
+            var findRes = yield safeFetch("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id&language=tr-TR", { signal });
             if (findRes.ok) {
               var fData = yield findRes.json();
-              var item = mediaType === "tv" || mediaType === "series" ? fData.tv_results && fData.tv_results[0] : fData.movie_results && fData.movie_results[0];
+              var isTv = mediaType === "tv" || mediaType === "series";
+              var item = isTv ? fData.tv_results && fData.tv_results[0] : fData.movie_results && fData.movie_results[0];
               if (item) {
                 numericId = item.id;
                 title = item.name || item.title || "";
                 origTitle = item.original_name || item.original_title || "";
+                var dateStr = item.first_air_date || item.release_date || "";
+                if (dateStr) year = dateStr.slice(0, 4);
               }
             }
           } else {
             numericId = cleanId;
           }
-          if (numericId && (!title || !origTitle)) {
-            var type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
+          if (numericId && (!title || !origTitle || !year)) {
+            var isTvType = mediaType === "tv" || mediaType === "series";
+            var type = isTvType ? "tv" : "movie";
             var tRes = yield safeFetch("https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", { signal });
             if (tRes.ok) {
               var tData = yield tRes.json();
               title = tData.name || tData.title || title;
               origTitle = tData.original_name || tData.original_title || origTitle;
+              var dateStr2 = tData.first_air_date || tData.release_date || "";
+              if (dateStr2) year = dateStr2.slice(0, 4);
             }
           }
-          return { title, origTitle, numericId };
+          return { title, origTitle, numericId, year };
         } catch (e) {
           if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
             throw e;
           }
-          return { title: "", origTitle: "", numericId: id };
+          return { title: "", origTitle: "", numericId: id, year: "" };
         }
       });
     }
@@ -589,18 +761,18 @@ var require_yabancidizi = __commonJS({
         return streams;
       });
     }
-    function extractStreamsFromEpisodePage(epUrl, signal) {
+    function extractStreamsFromPage(pageUrl, signal) {
       return __async(this, null, function* () {
         try {
-          var epRes = yield safeFetch(epUrl, {
+          var pageRes = yield safeFetch(pageUrl, {
             headers: {
               "User-Agent": HEADERS["User-Agent"],
               "Referer": BASE_URL + "/"
             },
             signal
           });
-          if (!epRes.ok) return [];
-          var html = yield epRes.text();
+          if (!pageRes.ok) return [];
+          var html = yield pageRes.text();
           var dlRegex = /<a[^>]+href=["'](https?:\/\/vidmoly\.[a-z0-9]+\/dl\/([a-zA-Z0-9_-]+))["'][^>]*>([\s\S]*?)<\/a>/gi;
           var vmRegex = /vidmoly\.[a-z0-9]+\/(?:dl\/|embed-)([a-zA-Z0-9_-]+)/gi;
           var streams = [];
@@ -674,6 +846,7 @@ var require_yabancidizi = __commonJS({
         }
       });
     }
+    var extractStreamsFromEpisodePage = extractStreamsFromPage;
     function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, options) {
       return __async(this, null, function* () {
         const signal = options && options.signal;
@@ -695,8 +868,9 @@ var require_yabancidizi = __commonJS({
               return yield getStreams(showMeta.meta.videos[0].id, mediaType, seasonNum, episodeNum, options);
             }
           }
-          var season = parseInt(seasonNum) || 1;
-          var episode = parseInt(episodeNum) || 1;
+          var isMovie = mediaType === "movie";
+          var season = isMovie ? 1 : parseInt(seasonNum) || 1;
+          var episode = isMovie ? 1 : parseInt(episodeNum) || 1;
           var info = yield resolveTmdbInfo(tmdbIdOrArgs, mediaType, signal);
           var searchTitles = [info.origTitle, info.title].filter(Boolean);
           if (searchTitles.length === 0) return [];
@@ -708,36 +882,32 @@ var require_yabancidizi = __commonJS({
                 results = cat.metas.map(function(m) {
                   return {
                     s_name: m.name,
-                    s_link: m.id.replace("yabancidizi:show:", "")
+                    s_link: m.id.replace("yabancidizi:show:", ""),
+                    s_type: m.type === "movie" ? "1" : "0"
                   };
                 });
               }
             }
             if (results.length === 0) continue;
-            var cleanTarget = ultraClean(title);
-            var matchedShow = null;
-            for (var r of results) {
-              var rTitle = ultraClean(r.s_name);
-              if (rTitle === cleanTarget) {
-                matchedShow = r;
-                break;
-              }
-            }
-            if (!matchedShow) {
-              for (var r of results) {
-                var rTitle = ultraClean(r.s_name);
-                if (rTitle.includes(cleanTarget) || cleanTarget.includes(rTitle)) {
-                  matchedShow = r;
-                  break;
-                }
-              }
-            }
-            if (!matchedShow && results.length > 0) {
-              matchedShow = results[0];
-            }
-            if (!matchedShow || !matchedShow.s_link) continue;
-            var targetEpUrl = BASE_URL + "/dizi/" + matchedShow.s_link + "/sezon-" + season + "/bolum-" + episode;
-            var streams = yield extractStreamsFromEpisodePage(targetEpUrl, signal);
+            var filteredResults = results.filter(function(r) {
+              if (isMovie) return r.s_type === "1";
+              return r.s_type === "0" || !r.s_type;
+            });
+            if (filteredResults.length === 0) continue;
+            var candidates = filteredResults.map(function(r) {
+              return {
+                title: r.s_name,
+                year: r.s_year || "",
+                slug: r.s_link,
+                href: isMovie ? "/film/" + r.s_link : "/dizi/" + r.s_link,
+                raw: r
+              };
+            });
+            var matched = pickBestCandidate(candidates, title, info.year, { minCoverage: 0.75, minScore: 50 });
+            if (!matched || !matched.raw) continue;
+            var matchedShow = matched.raw;
+            var targetUrl = isMovie || matchedShow.s_type === "1" ? BASE_URL + "/film/" + matchedShow.s_link : BASE_URL + "/dizi/" + matchedShow.s_link + "/sezon-" + season + "/bolum-" + episode;
+            var streams = yield extractStreamsFromPage(targetUrl, signal);
             if (streams.length > 0) return streams;
           }
           return [];
@@ -754,7 +924,8 @@ var require_yabancidizi = __commonJS({
       getStreams = function() {
         return __async(this, arguments, function* () {
           var res = yield _origGetStreams.apply(this, arguments);
-          return sortStreamsByQuality(res);
+          var sorted = sortStreamsByQuality(res);
+          return filterHighestQuality(sorted);
         });
       };
     }

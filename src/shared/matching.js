@@ -8,7 +8,10 @@ var STOP_WORDS = new Set([
 
 function normalizeText(str) {
   if (!str) return '';
-  return String(str).toLowerCase()
+  return String(str)
+    .replace(/\b([a-zA-Z])\.(?=[a-zA-Z]\b|\.)/g, '$1')
+    .replace(/\.([a-zA-Z])\b/g, '$1')
+    .toLowerCase()
     .replace(/[ğĞ]/g, 'g').replace(/[üÜ]/g, 'u').replace(/[şŞ]/g, 's')
     .replace(/[ıİ]/g, 'i').replace(/[öÖ]/g, 'o').replace(/[çÇ]/g, 'c')
     .replace(/[âáàÂÁÀ]/g, 'a').replace(/[îíÎÍ]/g, 'i').replace(/[ûúÛÚ]/g, 'u')
@@ -81,6 +84,7 @@ function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candY
     if (tTokens.indexOf(tok) !== -1) return false;
     var baseTok = tok.replace(/\d+$/, '');
     if (baseTok && tTokens.indexOf(baseTok) !== -1) return false;
+    if (tok.length > 2 && tok.endsWith('s') && tTokens.indexOf(tok.slice(0, -1)) !== -1) return false;
     return true;
   });
 

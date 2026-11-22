@@ -23,6 +23,7 @@ function loadBundle(fetchMock) {
         btoa,
         TextEncoder,
         TextDecoder,
+        Headers: global.Headers,
         require: name => {
             if (['cheerio', 'cheerio-without-node-native', 'react-native-cheerio'].includes(name)) {
                 return require('cheerio-without-node-native');
@@ -38,7 +39,7 @@ function loadBundle(fetchMock) {
     return { context, reports, provider: context.module.exports };
 }
 
-test('BelgeselX: TV series documentary resolves Cosmos S1E1 with Google Drive preview embed', async () => {
+test('BelgeselX: TV series documentary resolves Cosmos S1E1 to direct Google Drive MP4 stream', async () => {
     const requestedUrls = [];
     const fetchMock = async (url, options = {}) => {
         const u = String(url);
@@ -64,7 +65,6 @@ test('BelgeselX: TV series documentary resolves Cosmos S1E1 with Google Drive pr
                     <html><body>
                     <script>
                     diziGetir('998','0','5','4','Samanyoluna Bir Bakış','29118','Mart 2015','1','1','329','cosmos-bir-uzay-seruveni','0','','0','1');
-                    diziGetir('999','0','5','4','Yaşam Nehirleri','9613','Mart 2015','1','2','329','cosmos-bir-uzay-seruveni','0','','0','2');
                     function diziGetir(id, ic1, ic2, ic3, baslik, hit, tarih, sezon, bolum, diziid, sefurl) {}
                     </script>
                     </body></html>
@@ -72,7 +72,7 @@ test('BelgeselX: TV series documentary resolves Cosmos S1E1 with Google Drive pr
             };
         }
 
-        // 3. Player Slot 1 ('0' -> new5.php)
+        // 3. Player Slot 1 ('0' -> new5.php) with Google Drive Preview
         if (u.includes('video/data/new5.php?id=998&sira=1')) {
             return {
                 ok: true,
@@ -84,6 +84,15 @@ test('BelgeselX: TV series documentary resolves Cosmos S1E1 with Google Drive pr
             };
         }
 
+        // 4. Google Drive direct download resolution
+        if (u.includes('drive.usercontent.google.com/download')) {
+            return {
+                ok: true,
+                headers: new Headers({ 'content-type': 'application/octet-stream' }),
+                text: async () => ''
+            };
+        }
+
         throw new Error('Unexpected fetch for: ' + u);
     };
 
@@ -91,24 +100,22 @@ test('BelgeselX: TV series documentary resolves Cosmos S1E1 with Google Drive pr
     global.fetch = fetchMock;
     try {
         const streams = await belgeselx.getStreams('58474', 'tv', 1, 1);
-        assert.equal(streams.length, 1, 'Tek bir geçerli akış dönmelidir');
-        assert.equal(streams[0].url, 'https://drive.google.com/file/d/13RG7FMRrQP_Oo6uPd9WiCOqa7e9oT2mV/preview');
+        assert.equal(streams.length, 1, 'Doğrudan oynatılabilir 1 akış dönmelidir');
+        assert.ok(streams[0].url.includes('drive.usercontent.google.com/download'), 'Google Drive direct stream linki olmalıdır');
+        assert.equal(streams[0].type, 'mp4');
         assert.equal(streams[0].provider, 'belgeselx');
         assert.match(streams[0].title, /BELGX/);
         assert.match(streams[0].title, /TR Dublaj/);
         assert.match(streams[0].title, /1\. Sezon 1\. Bölüm/);
-        assert.equal(streams[0].headers.Referer, 'https://belgeselx.com/belgesel/cosmos-bir-uzay-seruveni');
-        assert.equal(streams[0].behaviorHints.proxyHeaders.request.Referer, 'https://belgeselx.com/belgesel/cosmos-bir-uzay-seruveni');
     } finally {
         global.fetch = originalFetch;
     }
 });
 
-test('BelgeselX: Movie format documentary resolves S1E1 with fallback and 1080p quality', async () => {
+test('BelgeselX: Movie format documentary resolves S1E1 to direct Google Drive stream with virus scan confirm', async () => {
     const fetchMock = async (url) => {
         const u = String(url);
 
-        // TMDB Movie Mock
         if (u.includes('api.themoviedb.org/3/movie/6844')) {
             return {
                 ok: true,
@@ -120,7 +127,6 @@ test('BelgeselX: Movie format documentary resolves S1E1 with fallback and 1080p 
             };
         }
 
-        // Direct Slug Probe
         if (u === 'https://belgeselx.com/belgesel/dunya-gezegeni') {
             return {
                 ok: true,
@@ -136,12 +142,27 @@ test('BelgeselX: Movie format documentary resolves S1E1 with fallback and 1080p 
             };
         }
 
-        // Slot 1
         if (u.includes('video/data/new5.php?id=748&sira=1')) {
             return {
                 ok: true,
                 text: async () => `
                     <iframe src="https://drive.google.com/file/d/1C04av1k07C33YMR_rwg_iKAEGA47PCwh/preview"></iframe>
+                `
+            };
+        }
+
+        // Virus scan warning HTML with confirm form
+        if (u.includes('drive.usercontent.google.com/download')) {
+            return {
+                ok: true,
+                headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+                text: async () => `
+                    <form id="download-form" action="https://drive.usercontent.google.com/download" method="get">
+                        <input type="hidden" name="id" value="1C04av1k07C33YMR_rwg_iKAEGA47PCwh">
+                        <input type="hidden" name="export" value="download">
+                        <input type="hidden" name="confirm" value="t">
+                        <input type="hidden" name="uuid" value="mock-uuid-12345">
+                    </form>
                 `
             };
         }
@@ -154,8 +175,10 @@ test('BelgeselX: Movie format documentary resolves S1E1 with fallback and 1080p 
     try {
         const streams = await belgeselx.getStreams('6844', 'movie');
         assert.equal(streams.length, 1);
-        assert.equal(streams[0].url, 'https://drive.google.com/file/d/1C04av1k07C33YMR_rwg_iKAEGA47PCwh/preview');
+        assert.ok(streams[0].url.includes('confirm=t'));
+        assert.ok(streams[0].url.includes('uuid=mock-uuid-12345'));
         assert.equal(streams[0].quality, '1080p');
+        assert.equal(streams[0].type, 'mp4');
         assert.match(streams[0].title, /Bir Kutuptan Diğerine/);
         assert.match(streams[0].title, /TR Dublaj/);
     } finally {
@@ -163,12 +186,11 @@ test('BelgeselX: Movie format documentary resolves S1E1 with fallback and 1080p 
     }
 });
 
-test('BelgeselX: 3-slot fallback skips dead/empty slot 1 and resolves working slot 2 MP4', async () => {
+test('BelgeselX: 3-slot fallback skips dead placeholder slot 1 and resolves working slot 2 MP4', async () => {
     const attemptedSlots = [];
     const fetchMock = async (url) => {
         const u = String(url);
 
-        // TMDB
         if (u.includes('api.themoviedb.org/3/tv/946')) {
             return {
                 ok: true,
@@ -180,14 +202,12 @@ test('BelgeselX: 3-slot fallback skips dead/empty slot 1 and resolves working sl
             };
         }
 
-        // Belgesel Page
         if (u === 'https://belgeselx.com/belgesel/sular-cekilince') {
             return {
                 ok: true,
                 text: async () => `
                     <html><body>
                     <script>
-                    // ic1='0' (new5), ic2='5' (new4), ic3='4' (new3)
                     diziGetir('16038','0','5','4','Akdenizin Kayıp Diyarları','11479','Kasım 2020','1','1','946','sular-cekilince','0','','0','1');
                     function diziGetir(id, ic1, ic2, ic3, baslik, hit, tarih, sezon, bolum, diziid, sefurl) {}
                     </script>
@@ -196,25 +216,24 @@ test('BelgeselX: 3-slot fallback skips dead/empty slot 1 and resolves working sl
             };
         }
 
-        // Slot 1: Ölü / Googleapis / Boş iframe
+        // Slot 1: Ölü placeholder
         if (u.includes('video/data/new5.php?id=16038&sira=1')) {
             attemptedSlots.push(1);
             return {
                 ok: true,
                 text: async () => `
-                    <head><script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.1/jquery.min.js"></script></head>
-                    <body><iframe src="https://ajax.googleapis.com/empty.html"></iframe></body>
+                    <video><source src="https://downloader.disk.yandex.ru/disk/sample/theblacklist711tr.mp4"></video>
                 `
             };
         }
 
-        // Slot 2: Çalışan direct Yandex MP4 video kaynağı
+        // Slot 2: Doğrudan çalışan MP4 akışı
         if (u.includes('video/data/new4.php?id=16038&sira=2')) {
             attemptedSlots.push(2);
             return {
                 ok: true,
                 text: async () => `
-                    <video><source src="https://downloader.disk.yandex.ru/disk/sample_doc.mp4?uid=0"></video>
+                    <video><source src="https://storage.belgeselx.com/sample_doc.mp4"></video>
                 `
             };
         }
@@ -226,16 +245,16 @@ test('BelgeselX: 3-slot fallback skips dead/empty slot 1 and resolves working sl
     global.fetch = fetchMock;
     try {
         const streams = await belgeselx.getStreams('946', 'tv', 1, 1);
-        assert.deepEqual(attemptedSlots, [1, 2], 'Slot 1 ölü olduğunda Slot 2 denenmelidir');
+        assert.deepEqual(attemptedSlots, [1, 2], 'Slot 1 ölü placeholder olduğunda Slot 2 denenmelidir');
         assert.equal(streams.length, 1);
-        assert.equal(streams[0].url, 'https://downloader.disk.yandex.ru/disk/sample_doc.mp4?uid=0');
+        assert.equal(streams[0].url, 'https://storage.belgeselx.com/sample_doc.mp4');
         assert.equal(streams[0].type, 'mp4');
     } finally {
         global.fetch = originalFetch;
     }
 });
 
-test('BelgeselX: Unwraps nested URLs in player embeds (e.g. dailymotion wrapper over OK.ru)', async () => {
+test('BelgeselX: Resolves OK.ru embed into raw direct video stream from metadata.videos', async () => {
     const fetchMock = async (url) => {
         const u = String(url);
 
@@ -254,19 +273,29 @@ test('BelgeselX: Unwraps nested URLs in player embeds (e.g. dailymotion wrapper 
                 ok: true,
                 text: async () => `
                     <script>
-                    diziGetir('13149','2','','','Pandat Kılıcı','17495','Ekim 2017','1','1','742','atesten-dogan','0','','0','1');
+                    diziGetir('13149','4','','','Pandat Kılıcı','17495','Ekim 2017','1','1','742','atesten-dogan','0','','0','1');
                     function diziGetir(id, ic1, ic2, ic3, baslik, hit, tarih, sezon, bolum, diziid, sefurl) {}
                     </script>
                 `
             };
         }
 
-        // ic='2' -> new1.php with nested embed
-        if (u.includes('video/data/new1.php?id=13149&sira=1')) {
+        // ic='4' -> new3.php returning OK.ru embed
+        if (u.includes('video/data/new3.php?id=13149&sira=1')) {
             return {
                 ok: true,
                 text: async () => `
-                    <iframe src="https://www.dailymotion.com/embed/video/https://odnoklassniki.ru/videoembed/123456789"></iframe>
+                    <iframe src="https://odnoklassniki.ru/videoembed/1692779809518"></iframe>
+                `
+            };
+        }
+
+        // OK.ru page with OKVideo data-options
+        if (u.includes('odnoklassniki.ru/videoembed/1692779809518')) {
+            return {
+                ok: true,
+                text: async () => `
+                    <div data-module="OKVideo" data-options='{"flashvars":{"metadata":"{\\"videos\\":[{\\"name\\":\\"hd\\",\\"url\\":\\"https://vd1.okcdn.ru/video_720.mp4\\"},{\\"name\\":\\"sd\\",\\"url\\":\\"https://vd1.okcdn.ru/video_480.mp4\\"}]}"}}'></div>
                 `
             };
         }
@@ -279,7 +308,9 @@ test('BelgeselX: Unwraps nested URLs in player embeds (e.g. dailymotion wrapper 
     try {
         const streams = await belgeselx.getStreams('742', 'tv', 1, 1);
         assert.equal(streams.length, 1);
-        assert.equal(streams[0].url, 'https://odnoklassniki.ru/videoembed/123456789', 'İç içe gömülü hedef URL açılmalıdır');
+        assert.equal(streams[0].url, 'https://vd1.okcdn.ru/video_720.mp4', 'OK.ru doğrudan MP4 video linkine çözümlenmelidir');
+        assert.equal(streams[0].type, 'mp4');
+        assert.equal(streams[0].quality, '720p');
     } finally {
         global.fetch = originalFetch;
     }
@@ -300,12 +331,10 @@ test('BelgeselX: Search fallback matches documentary when direct slug probe does
             };
         }
 
-        // Direct slug probes fail
         if (u.includes('/belgesel/antik-uzaylilar-belgesel-serisi') || u.includes('/belgesel/ancient-aliens')) {
             return { ok: false, status: 404, text: async () => '404 Not Found' };
         }
 
-        // Search query succeeds
         if (u.includes('?s=')) {
             return {
                 ok: true,
@@ -339,6 +368,14 @@ test('BelgeselX: Search fallback matches documentary when direct slug probe does
             };
         }
 
+        if (u.includes('drive.usercontent.google.com/download')) {
+            return {
+                ok: true,
+                headers: new Headers({ 'content-type': 'application/octet-stream' }),
+                text: async () => ''
+            };
+        }
+
         throw new Error('Unexpected fetch for: ' + u);
     };
 
@@ -347,7 +384,7 @@ test('BelgeselX: Search fallback matches documentary when direct slug probe does
     try {
         const streams = await belgeselx.getStreams('75', 'tv', 1, 1);
         assert.equal(streams.length, 1);
-        assert.equal(streams[0].url, 'https://drive.google.com/file/d/ancient_aliens_drive/preview');
+        assert.ok(streams[0].url.includes('drive.usercontent.google.com/download'));
     } finally {
         global.fetch = originalFetch;
     }
@@ -413,11 +450,18 @@ test('BelgeselX: Bundle VM execution test from manifest.json scraper', async () 
                 text: async () => `<iframe src="https://drive.google.com/file/d/cosmos_vm_drive/preview"></iframe>`
             };
         }
+        if (u.includes('drive.usercontent.google.com/download')) {
+            return {
+                ok: true,
+                headers: new Headers({ 'content-type': 'application/octet-stream' }),
+                text: async () => ''
+            };
+        }
         throw new Error('Unexpected fetch in VM: ' + u);
     });
 
     const streams = await provider.getStreams('58474', 'tv', 1, 1);
     assert.equal(streams.length, 1);
-    assert.equal(streams[0].url, 'https://drive.google.com/file/d/cosmos_vm_drive/preview');
+    assert.ok(streams[0].url.includes('drive.usercontent.google.com/download'));
     assert.match(reports.at(-1), /sources-found/);
 });

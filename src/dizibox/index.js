@@ -120,6 +120,89 @@ function parseSearchResults(html, mediaType, baseUrl) {
     return candidates;
 }
 
+// ── Arama Sorguları ve Başlık Çeşitlendirme ────────────────────────────
+function toSlugVariants(str) {
+    if (!str) return [];
+    var s1 = String(str).replace(/['’]s\b/gi, 's').replace(/['’]/g, '');
+    var norm = normalizeText(s1).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    var res = [norm];
+    var origNorm = normalizeText(str).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!res.includes(origNorm)) res.push(origNorm);
+    return res.filter(Boolean);
+}
+
+function buildSearchQueries(info) {
+    var rawList = [info.titleTr || info.title, info.origTitle, info.titleEn].filter(Boolean);
+    var queries = [];
+    var seen = Object.create(null);
+
+    function add(q) {
+        if (!q) return;
+        var clean = String(q).trim().replace(/\s+/g, ' ');
+        if (clean.length < 2) return;
+        var key = clean.toLowerCase();
+        if (seen[key]) return;
+        seen[key] = true;
+        queries.push(clean);
+    }
+
+    for (var i = 0; i < rawList.length; i++) {
+        var t = rawList[i];
+        add(t);
+        // Kesme işareti sadeleştirmesi (Marvel's -> Marvels)
+        if (/['’]/.test(t)) {
+            add(t.replace(/['’]s\b/gi, 's').replace(/['’]/g, ''));
+        }
+        // Kısaltma noktalarını birleştirme (M.D. -> MD)
+        if (/\b[a-zA-Z]\.[a-zA-Z]\b/.test(t)) {
+            add(t.replace(/\b([a-zA-Z])\.(?=[a-zA-Z]\b|\.)/g, '$1').replace(/\.([a-zA-Z])\b/g, '$1'));
+        }
+        // İki nokta veya tire ayrıştırması
+        if (/[:\-–—]/.test(t)) {
+            add(t.replace(/[:\-–—]+/g, ' '));
+        }
+    }
+
+    return queries.slice(0, 3);
+}
+
+function getMatchTitles(info) {
+    var raw = [info.title, info.titleTr, info.origTitle, info.titleEn].filter(Boolean);
+    var list = [];
+    var seen = Object.create(null);
+    function add(t) {
+        if (!t) return;
+        var s = String(t).trim();
+        var k = s.toLowerCase();
+        if (seen[k]) return;
+        seen[k] = true;
+        list.push(s);
+    }
+    for (var i = 0; i < raw.length; i++) {
+        var item = raw[i];
+        add(item);
+        if (/['’]/.test(item)) {
+            add(item.replace(/['’]s\b/gi, 's').replace(/['’]/g, ''));
+        }
+        if (/[:\-–—]/.test(item)) {
+            add(item.replace(/[:\-–—]+/g, ' '));
+        }
+        if (/\b[a-zA-Z]\.[a-zA-Z]\b/.test(item)) {
+            add(item.replace(/\b([a-zA-Z])\.(?=[a-zA-Z]\b|\.)/g, '$1').replace(/\.([a-zA-Z])\b/g, '$1'));
+        }
+    }
+    return list;
+}
+
+function findBestCandidate(candidates, matchTitles, year, opts) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+    for (var m = 0; m < matchTitles.length; m++) {
+        var cand = pickBestCandidate(candidates, matchTitles[m], year, opts);
+        if (cand) return cand;
+    }
+    return null;
+}
+
 // ── Pilavyer Player Ayrıştırıcı ──────────────────────────────────────
 async function extractPilavyerStream(pageHtml, pageUrl, signal) {
     // 1. data-pv anahtarını bul
@@ -129,24 +212,61 @@ async function extractPilavyerStream(pageHtml, pageUrl, signal) {
     }
     var pvSlug = pvMatch[1];
 
-    // 2. Pilavyer s.php isteği at
-    var playerUrl = PLAYER_BASE + '/assets/js/s.php?s=' + encodeURIComponent(pvSlug);
-    var playerRes = await fetchWithTimeout(playerUrl, {
-        headers: {
-            'User-Agent': DEFAULT_UA,
-            'Referer': BASE_URL + '/',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        },
-        signal: signal
-    }, 5000);
+    // 2. Sayfada kullanılan Pilavyer alan adını dinamik olarak tespit et
+    var detectedBases = [];
+    var scriptMatches = pageHtml.match(/https?:\/\/[a-z0-9.-]*?pilavyer[a-z0-9.-]*(?:\.[a-z]{2,})/gi);
+    if (scriptMatches) {
+        for (var sm = 0; sm < scriptMatches.length; sm++) {
+            var cleanSm = scriptMatches[sm].replace(/\/+$/, '');
+            if (!detectedBases.includes(cleanSm)) detectedBases.push(cleanSm);
+        }
+    }
 
-    if (!playerRes.ok) {
+    var candidateBases = [];
+    for (var d = 0; d < detectedBases.length; d++) {
+        if (!candidateBases.includes(detectedBases[d])) candidateBases.push(detectedBases[d]);
+    }
+    var defaults = ['https://play2.pilavyerplay.top', 'https://pilavyerplay.top', PLAYER_BASE].filter(Boolean);
+    for (var f = 0; f < defaults.length; f++) {
+        if (!candidateBases.includes(defaults[f])) candidateBases.push(defaults[f]);
+    }
+
+    // 3. Sırayla aday alan adlarından s.php isteği at
+    var playerHtml = null;
+    var usedPlayerBase = null;
+    for (var b = 0; b < candidateBases.length; b++) {
+        var pBase = candidateBases[b];
+        var playerUrl = pBase + '/assets/js/s.php?s=' + encodeURIComponent(pvSlug);
+        try {
+            var playerRes = await fetchWithTimeout(playerUrl, {
+                headers: {
+                    'User-Agent': DEFAULT_UA,
+                    'Referer': BASE_URL + '/',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                },
+                signal: signal
+            }, 8000);
+
+            if (playerRes.ok) {
+                var text = await playerRes.text();
+                if (text.includes('window.__PLAYER__')) {
+                    playerHtml = text;
+                    usedPlayerBase = pBase;
+                    break;
+                }
+            }
+        } catch (err) {
+            if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT' || (signal && signal.aborted))) {
+                throw err;
+            }
+        }
+    }
+
+    if (!playerHtml || !usedPlayerBase) {
         return null;
     }
 
-    var playerHtml = await playerRes.text();
-
-    // 3. window.__PLAYER__ nesnesini parse et
+    // 4. window.__PLAYER__ nesnesini parse et
     var configMatch = playerHtml.match(/window\.__PLAYER__\s*=\s*({[\s\S]*?});/);
     if (!configMatch || !configMatch[1]) {
         return null;
@@ -163,7 +283,7 @@ async function extractPilavyerStream(pageHtml, pageUrl, signal) {
         return null;
     }
 
-    // 4. Altyazıları Nuvio standart formatına dönüştür
+    // 5. Altyazıları Nuvio standart formatına dönüştür
     var subtitles = [];
     if (Array.isArray(config.subs)) {
         for (var i = 0; i < config.subs.length; i++) {
@@ -181,7 +301,7 @@ async function extractPilavyerStream(pageHtml, pageUrl, signal) {
         }
     }
 
-    // 5. Ses kanalı ve başlık etiketlemesi
+    // 6. Ses kanalı ve başlık etiketlemesi
     var audioLabel = 'Orijinal';
     if (Array.isArray(config.audios) && config.audios.length > 0) {
         var defAudio = config.audios.find(function (a) { return a && a.default; }) || config.audios[0];
@@ -192,7 +312,7 @@ async function extractPilavyerStream(pageHtml, pageUrl, signal) {
 
     return {
         streamUrl: config.stream,
-        playerUrl: playerUrl,
+        playerUrl: usedPlayerBase + '/assets/js/s.php?s=' + encodeURIComponent(pvSlug),
         audioLabel: audioLabel,
         title: config.title || '',
         subtitles: subtitles
@@ -211,118 +331,146 @@ async function getStreams(id, type, season, episode, options) {
         throw new ProviderError('TMDB_ERROR');
     }
 
-    // 2. Arama sorgu alternatiflerini oluştur
-    var searchQueries = [];
-    if (info.title) searchQueries.push(info.title);
-    if (info.origTitle && normalizeText(info.origTitle) !== normalizeText(info.title)) {
-        searchQueries.push(info.origTitle);
-    }
-    // Başlıkta ":" veya "-" varsa temizle
-    if (info.title && /[:\-–—]/.test(info.title)) {
-        var clean = info.title.replace(/[:\-–—]+/g, ' ').replace(/\s+/g, ' ').trim();
-        if (clean && !searchQueries.includes(clean)) searchQueries.push(clean);
-    }
+    var pageHtml = null;
+    var targetPageUrl = null;
 
-    var bestCandidate = null;
-    var candidates = [];
-
-    // 3. Arama uç noktasını çağır
-    for (var i = 0; i < searchQueries.length; i++) {
-        var q = searchQueries[i];
-        if (!q) continue;
-
-        try {
-            var searchUrl = BASE_URL + '/ara?q=' + encodeURIComponent(q);
-            var searchRes = await fetchWithTimeout(searchUrl, {
-                headers: WORKING_HEADERS,
-                signal: signal
-            }, 5000);
-
-            if (searchRes.ok) {
-                var searchHtml = await searchRes.text();
-                var found = parseSearchResults(searchHtml, type, BASE_URL);
-                if (found.length > 0) {
-                    candidates = candidates.concat(found);
-                    bestCandidate = pickBestCandidate(found, info.title, info.year, { minCoverage: 0.75, minScore: 50 });
-                    if (!bestCandidate && info.origTitle) {
-                        bestCandidate = pickBestCandidate(found, info.origTitle, info.year, { minCoverage: 0.75, minScore: 50 });
-                    }
-                    if (bestCandidate) break;
-                }
-            }
-        } catch (e) {
-            if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) throw e;
+    // 2. Öncelikli Hızlı Yol: Prediktif Slug Yoklaması (Predictive Slug Probe)
+    // DiziBox URL şablonu standarttır:
+    // TV: /dizi/{slug}/sezon-{s}/bolum-{e}
+    // Film: /film/{slug}
+    // İçeriklerin büyük bölümü doğrudan bu adreste önbelleklenmiş olarak <1-2s içinde yanıt verir.
+    var predictiveSlugs = [];
+    var slugSources = [info.origTitle, info.title, info.titleTr].filter(Boolean);
+    for (var s = 0; s < slugSources.length; s++) {
+        var variants = toSlugVariants(slugSources[s]);
+        for (var v = 0; v < variants.length; v++) {
+            if (!predictiveSlugs.includes(variants[v])) predictiveSlugs.push(variants[v]);
         }
     }
 
-    if (!bestCandidate && candidates.length > 0) {
-        bestCandidate = pickBestCandidate(candidates, info.title, info.year, { minCoverage: 0.65, minScore: 40 }) ||
-                        (info.origTitle ? pickBestCandidate(candidates, info.origTitle, info.year, { minCoverage: 0.65, minScore: 40 }) : null);
-    }
+    for (var p = 0; p < Math.min(predictiveSlugs.length, 2); p++) {
+        var pSlug = predictiveSlugs[p];
+        var probeUrl = type === 'tv'
+            ? BASE_URL + '/dizi/' + pSlug + '/sezon-' + season + '/bolum-' + episode
+            : BASE_URL + '/film/' + pSlug;
 
-    if (!bestCandidate) {
-        throw new ProviderError('NO_MATCH');
-    }
-
-    // 4. Hedef sayfa URL'sini belirle
-    var targetPageUrl;
-    if (type === 'tv') {
-        var baseSlug = bestCandidate.slug || bestCandidate.href.split('/').filter(Boolean).pop();
-        targetPageUrl = BASE_URL + '/dizi/' + baseSlug + '/sezon-' + season + '/bolum-' + episode;
-    } else {
-        targetPageUrl = bestCandidate.href;
-    }
-
-    // 5. Hedef sayfayı çek
-    var pageRes = await fetchWithTimeout(targetPageUrl, {
-        headers: WORKING_HEADERS,
-        signal: signal
-    }, 5000);
-
-    // Eğer prediktif TV bölüm URL'si 404 döndüyse dizi ana sayfasından bölüm bağlantısını ara
-    if (!pageRes.ok && type === 'tv') {
         try {
-            var showRes = await fetchWithTimeout(bestCandidate.href, {
+            var probeRes = await fetchWithTimeout(probeUrl, {
                 headers: WORKING_HEADERS,
                 signal: signal
-            }, 5000);
-            if (showRes.ok) {
-                var showHtml = await showRes.text();
-                var $show = cheerio.load(showHtml);
-                var epPattern = new RegExp('sezon-' + season + '/bolum-' + episode + '(?:[/?#]|$)', 'i');
-                var foundEpHref = null;
-                $show('a[href]').each(function () {
-                    var h = $(this).attr('href') || '';
-                    if (epPattern.test(h)) {
-                        foundEpHref = h;
-                        return false;
-                    }
-                });
-                if (foundEpHref) {
-                    var actualEpUrl = foundEpHref.startsWith('http') ? foundEpHref : BASE_URL + (foundEpHref.startsWith('/') ? '' : '/') + foundEpHref;
-                    pageRes = await fetchWithTimeout(actualEpUrl, {
-                        headers: WORKING_HEADERS,
-                        signal: signal
-                    }, 5000);
-                    targetPageUrl = actualEpUrl;
+            }, 3500);
+
+            if (probeRes.ok) {
+                var probeHtml = await probeRes.text();
+                if (probeHtml.includes('data-pv=')) {
+                    pageHtml = probeHtml;
+                    targetPageUrl = probeUrl;
+                    break;
                 }
             }
         } catch (_) {}
     }
 
-    if (!pageRes || !pageRes.ok) {
-        throw new ProviderError('NO_MATCH');
+    // 3. Eğer prediktif yoklama sonuç vermediyse /ara?q= arama mekanizmasıyla devam et
+    if (!pageHtml) {
+        var searchQueries = buildSearchQueries(info);
+        var matchTitles = getMatchTitles(info);
+
+        var bestCandidate = null;
+        var candidates = [];
+        var startTime = Date.now();
+
+        for (var i = 0; i < searchQueries.length; i++) {
+            if (Date.now() - startTime > 9000) break;
+            var q = searchQueries[i];
+            if (!q) continue;
+
+            try {
+                var searchUrl = BASE_URL + '/ara?q=' + encodeURIComponent(q);
+                var searchRes = await fetchWithTimeout(searchUrl, {
+                    headers: WORKING_HEADERS,
+                    signal: signal
+                }, 8000);
+
+                if (searchRes.ok) {
+                    var searchHtml = await searchRes.text();
+                    var found = parseSearchResults(searchHtml, type, BASE_URL);
+                    if (found.length > 0) {
+                        candidates = candidates.concat(found);
+                        bestCandidate = findBestCandidate(found, matchTitles, info.year, { minCoverage: 0.70, minScore: 50 });
+                        if (bestCandidate) break;
+                    }
+                }
+            } catch (e) {
+                if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) throw e;
+            }
+        }
+
+        if (!bestCandidate && candidates.length > 0) {
+            bestCandidate = findBestCandidate(candidates, matchTitles, info.year, { minCoverage: 0.60, minScore: 40 });
+        }
+
+        if (!bestCandidate) {
+            throw new ProviderError('NO_MATCH');
+        }
+
+        if (type === 'tv') {
+            var baseSlug = bestCandidate.slug || bestCandidate.href.split('/').filter(Boolean).pop();
+            targetPageUrl = BASE_URL + '/dizi/' + baseSlug + '/sezon-' + season + '/bolum-' + episode;
+        } else {
+            targetPageUrl = bestCandidate.href;
+        }
+
+        var pageRes = await fetchWithTimeout(targetPageUrl, {
+            headers: WORKING_HEADERS,
+            signal: signal
+        }, 8000);
+
+        // Eğer prediktif TV bölüm URL'si 404 döndüyse dizi ana sayfasından bölüm bağlantısını ara
+        if (!pageRes.ok && type === 'tv') {
+            try {
+                var showRes = await fetchWithTimeout(bestCandidate.href, {
+                    headers: WORKING_HEADERS,
+                    signal: signal
+                }, 8000);
+                if (showRes.ok) {
+                    var showHtml = await showRes.text();
+                    var $show = cheerio.load(showHtml);
+                    var epPattern = new RegExp('sezon-' + season + '/bolum-' + episode + '(?:[/?#]|$)', 'i');
+                    var foundEpHref = null;
+                    $show('a[href]').each(function () {
+                        var h = $(this).attr('href') || '';
+                        if (epPattern.test(h)) {
+                            foundEpHref = h;
+                            return false;
+                        }
+                    });
+                    if (foundEpHref) {
+                        var actualEpUrl = foundEpHref.startsWith('http') ? foundEpHref : BASE_URL + (foundEpHref.startsWith('/') ? '' : '/') + foundEpHref;
+                        pageRes = await fetchWithTimeout(actualEpUrl, {
+                            headers: WORKING_HEADERS,
+                            signal: signal
+                        }, 8000);
+                        targetPageUrl = actualEpUrl;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        if (!pageRes || !pageRes.ok) {
+            throw new ProviderError('NO_MATCH');
+        }
+
+        pageHtml = await pageRes.text();
     }
 
-    var pageHtml = await pageRes.text();
-
-    // 6. Pilavyer akışını ayrıştır
+    // 4. Pilavyer akışını ayrıştır
     var extracted = await extractPilavyerStream(pageHtml, targetPageUrl, signal);
     if (!extracted || !extracted.streamUrl) {
         return [];
     }
 
-    // 7. Akış nesnesini oluştur
+    // 5. Akış nesnesini oluştur
     var streamTitle = PROVIDER_NAME + ' - ' + extracted.audioLabel + ' (HLS Multi)';
     var stream = {
         name: PROVIDER_NAME,

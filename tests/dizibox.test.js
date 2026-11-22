@@ -343,3 +343,123 @@ test('DiziBox: Successful Movie stream extraction', async () => {
     global.fetch = originalFetch;
   }
 });
+
+test('DiziBox: Dynamic Pilavyer domain extraction handles play2.pilavyerplay.top and fallbacks', async () => {
+  const fetchMock = async (url) => {
+    const u = String(url);
+    if (u.includes('api.themoviedb.org/3/tv/94997')) {
+      return {
+        ok: true,
+        json: async () => ({
+          name: 'House of the Dragon',
+          original_name: 'House of the Dragon',
+          first_air_date: '2022-08-21'
+        })
+      };
+    }
+
+    if (u === 'https://ddizibox.click/dizi/house-of-the-dragon/sezon-1/bolum-1') {
+      return {
+        ok: true,
+        text: async () => `
+          <html>
+            <body>
+              <template data-tbx-defer>
+                <div data-pv="hotd-slug-xyz"></div>
+                <script src="https://play2.pilavyerplay.top/assets/js/core.js"></script>
+              </template>
+            </body>
+          </html>
+        `
+      };
+    }
+
+    if (u.includes('play2.pilavyerplay.top/assets/js/s.php?s=hotd-slug-xyz')) {
+      return {
+        ok: true,
+        text: async () => `
+          <script>
+            window.__PLAYER__ = {
+              "stream": "https://play2.pilavyerplay.top/api/stream.php?v=hotd123",
+              "title": "House of the Dragon 1. Sezon 1. Bölüm",
+              "subs": [
+                { "lang": "tr", "label": "Türkçe", "src": "https://play2.pilavyerplay.top/sub.vtt" }
+              ],
+              "audios": [
+                { "label": "Orijinal", "default": 1 }
+              ]
+            };
+          </script>
+        `
+      };
+    }
+
+    throw new Error('Unexpected fetch for: ' + u);
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = fetchMock;
+  try {
+    const streams = await dizibox.getStreams('94997', 'tv', 1, 1);
+    assert.equal(streams.length, 1);
+    assert.equal(streams[0].name, 'DBOX');
+    assert.ok(streams[0].url.includes('play2.pilavyerplay.top'));
+    assert.equal(streams[0].headers.Referer, 'https://play2.pilavyerplay.top/assets/js/s.php?s=hotd-slug-xyz');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("DiziBox: Matches titles with apostrophes (Marvel's The Punisher) and acronyms (House, M.D.)", async () => {
+  const fetchMock = async (url) => {
+    const u = String(url);
+    if (u.includes('api.themoviedb.org/3/tv/67178')) {
+      return {
+        ok: true,
+        json: async () => ({
+          name: "Marvel's The Punisher",
+          original_name: "Marvel's The Punisher",
+          first_air_date: '2017-11-17'
+        })
+      };
+    }
+
+    if (u === 'https://ddizibox.click/dizi/marvels-the-punisher/sezon-1/bolum-1') {
+      return {
+        ok: true,
+        text: async () => `
+          <template data-tbx-defer>
+            <div data-pv="punisher-pv"></div>
+            <script src="https://pilavyerplay.top/assets/js/core.js"></script>
+          </template>
+        `
+      };
+    }
+
+    if (u.includes('pilavyerplay.top/assets/js/s.php?s=punisher-pv')) {
+      return {
+        ok: true,
+        text: async () => `
+          <script>
+            window.__PLAYER__ = {
+              "stream": "https://pilavyerplay.top/api/stream.php?v=punisher",
+              "subs": []
+            };
+          </script>
+        `
+      };
+    }
+
+    throw new Error('Unexpected fetch for: ' + u);
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = fetchMock;
+  try {
+    const streams = await dizibox.getStreams('67178', 'tv', 1, 1);
+    assert.equal(streams.length, 1);
+    assert.equal(streams[0].url, 'https://pilavyerplay.top/api/stream.php?v=punisher');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

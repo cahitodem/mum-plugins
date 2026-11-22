@@ -601,7 +601,7 @@ var require_matching = __commonJS({
     ]);
     function normalizeText(str) {
       if (!str) return "";
-      return String(str).toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
+      return String(str).replace(/\b([a-zA-Z])\.(?=[a-zA-Z]\b|\.)/g, "$1").replace(/\.([a-zA-Z])\b/g, "$1").toLowerCase().replace(/[ğĞ]/g, "g").replace(/[üÜ]/g, "u").replace(/[şŞ]/g, "s").replace(/[ıİ]/g, "i").replace(/[öÖ]/g, "o").replace(/[çÇ]/g, "c").replace(/[âáàÂÁÀ]/g, "a").replace(/[îíÎÍ]/g, "i").replace(/[ûúÛÚ]/g, "u").replace(/[^a-z0-9]+/g, " ").trim();
     }
     function tokenize(str) {
       var norm = normalizeText(str);
@@ -645,6 +645,7 @@ var require_matching = __commonJS({
         if (tTokens.indexOf(tok) !== -1) return false;
         var baseTok = tok.replace(/\d+$/, "");
         if (baseTok && tTokens.indexOf(baseTok) !== -1) return false;
+        if (tok.length > 2 && tok.endsWith("s") && tTokens.indexOf(tok.slice(0, -1)) !== -1) return false;
         return true;
       });
       var isExactTitleOrSlug = cNorm === tNorm || sNorm === tNorm;
@@ -755,7 +756,7 @@ var require_belgeselx = __commonJS({
     var { loadConfig, val, wrapAll } = require_config2();
     var { fetchWithTimeout, resolveTmdbMeta, DEFAULT_UA } = require_http();
     var { ProviderError } = require_errors();
-    var { pickBestCandidate, normalizeText } = require_matching();
+    var { pickBestCandidate, normalizeText, tokenize } = require_matching();
     var cheerio = require("cheerio-without-node-native");
     var _cfgReady = null;
     function cfgReady() {
@@ -794,14 +795,73 @@ var require_belgeselx = __commonJS({
       return __async(this, null, function* () {
         try {
           var meta = yield resolveTmdbMeta(id, mediaType || "tv", { signal, apiKey: TMDB_API_KEY });
-          return meta || { title: "", origTitle: "", numericId: id, year: "", originCountries: [], origLanguage: "" };
+          var res = meta || { title: "", origTitle: "", numericId: id, year: "", originCountries: [], origLanguage: "" };
+          res.altTitles = [];
+          var numId = res.numericId || (typeof id === "number" || /^\d+$/.test(String(id).trim()) ? parseInt(id, 10) : null);
+          if (numId) {
+            try {
+              var altUrl = "https://api.themoviedb.org/3/" + (mediaType === "movie" ? "movie" : "tv") + "/" + numId + "/alternative_titles?api_key=" + TMDB_API_KEY;
+              var aRes = yield fetchWithTimeout(altUrl, { signal }, 3e3);
+              if (aRes.ok) {
+                var aData = yield aRes.json();
+                var titles = (aData.results || aData.titles || []).map(function(x) {
+                  return x.title;
+                }).filter(Boolean);
+                res.altTitles = titles;
+              }
+            } catch (_) {
+            }
+          }
+          return res;
         } catch (e) {
           if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) {
             throw e;
           }
-          return { title: "", origTitle: "", numericId: id, year: "", originCountries: [], origLanguage: "" };
+          return { title: "", origTitle: "", numericId: id, year: "", originCountries: [], origLanguage: "", altTitles: [] };
         }
       });
+    }
+    function pickDocumentaryFallback(candidates, targetTitle, targetYear, seasonNum) {
+      if (!targetTitle || !Array.isArray(candidates) || candidates.length === 0) return null;
+      var tTokens = tokenize(targetTitle);
+      if (tTokens.length === 0) return null;
+      var tSlug = slugify(targetTitle);
+      var matchingCandidates = [];
+      for (var i = 0; i < candidates.length; i++) {
+        var c = candidates[i];
+        var cSlug = c.slug || slugify(c.title);
+        var cTokens = new Set(tokenize(c.title).concat(tokenize(cSlug)));
+        var allTokensMatch = tTokens.every(function(tok) {
+          return cTokens.has(tok);
+        });
+        var slugPrefixMatch = cSlug.indexOf(tSlug) === 0 || cSlug.indexOf("-" + tSlug) !== -1;
+        if (allTokensMatch || slugPrefixMatch) {
+          matchingCandidates.push(c);
+        }
+      }
+      if (matchingCandidates.length === 0) return null;
+      if (matchingCandidates.length === 1) return matchingCandidates[0];
+      matchingCandidates.sort(function(a, b) {
+        var aText = (a.title + " " + (a.slug || "")).toLowerCase();
+        var bText = (b.title + " " + (b.slug || "")).toLowerCase();
+        var aIsSeason2 = /yeni|dunyalar|season\s*2|sezon\s*2|\b2\b/i.test(aText);
+        var bIsSeason2 = /yeni|dunyalar|season\s*2|sezon\s*2|\b2\b/i.test(bText);
+        if (seasonNum === 2) {
+          if (aIsSeason2 && !bIsSeason2) return -1;
+          if (!aIsSeason2 && bIsSeason2) return 1;
+        } else if (seasonNum === 1) {
+          if (!aIsSeason2 && bIsSeason2) return -1;
+          if (aIsSeason2 && !bIsSeason2) return 1;
+        }
+        if (targetYear) {
+          var aHasYear = aText.indexOf(targetYear) !== -1;
+          var bHasYear = bText.indexOf(targetYear) !== -1;
+          if (aHasYear && !bHasYear) return -1;
+          if (!aHasYear && bHasYear) return 1;
+        }
+        return (a.slug || a.title).length - (b.slug || b.title).length;
+      });
+      return matchingCandidates[0];
     }
     function parseDiziGetirCalls(html) {
       var episodes = [];
@@ -893,57 +953,169 @@ var require_belgeselx = __commonJS({
       });
       return candidates;
     }
-    function extractStreamFromPlayerHtml(html, playerUrl, docHtml, targetEpisode) {
-      if (!html || typeof html !== "string") return null;
-      var $ = cheerio.load(html);
-      var has1080p = /1080p?/i.test(html) || targetEpisode && /1080p?/i.test(targetEpisode.title) || docHtml && /1080p?/i.test(docHtml);
-      var quality = has1080p ? "1080p" : "720p";
-      var iframes = $("iframe[src]").map(function() {
-        return $(this).attr("src");
-      }).get();
-      for (var i = 0; i < iframes.length; i++) {
-        var src = iframes[i];
-        if (!src) continue;
-        if (src.indexOf("//") === 0) src = "https:" + src;
-        var nestedMatch = src.match(/https?:\/\/[^/]+\/.*?(https?:\/\/.+)/i);
-        if (nestedMatch && nestedMatch[1]) {
-          src = nestedMatch[1];
-        }
-        if (/googleapis\.com|recaptcha|google\.com\/recaptcha/i.test(src)) continue;
-        if (/^https?:\/\//i.test(src)) {
+    function resolveGoogleDriveStream(driveUrl, signal) {
+      return __async(this, null, function* () {
+        var match = driveUrl.match(/drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/i);
+        if (!match) return null;
+        var fileId = match[1];
+        try {
+          var dlUrl = "https://drive.usercontent.google.com/download?id=" + fileId + "&export=download";
+          var res = yield fetchWithTimeout(dlUrl, {
+            headers: { "User-Agent": DEFAULT_UA },
+            signal
+          }, 5e3);
+          if (!res.ok) return null;
+          var contentType = res.headers.get("content-type") || "";
+          if (contentType.indexOf("octet-stream") !== -1 || contentType.indexOf("video/") !== -1) {
+            return {
+              url: dlUrl,
+              type: "mp4",
+              quality: "1080p",
+              headers: { "User-Agent": DEFAULT_UA }
+            };
+          }
+          var html = yield res.text();
+          var $ = cheerio.load(html);
+          var form = $('form#download-form, form[action*="download"]');
+          if (form.length > 0) {
+            var inputs = {};
+            form.find("input").each(function() {
+              var name = $(this).attr("name");
+              if (name && name !== "undefined") {
+                inputs[name] = $(this).attr("value") || "";
+              }
+            });
+            var action = form.attr("action") || "https://drive.usercontent.google.com/download";
+            var queryParts = [];
+            Object.keys(inputs).forEach(function(k) {
+              queryParts.push(encodeURIComponent(k) + "=" + encodeURIComponent(inputs[k]));
+            });
+            if (!inputs.confirm) queryParts.push("confirm=t");
+            var finalUrl = action + (action.indexOf("?") !== -1 ? "&" : "?") + queryParts.join("&");
+            return {
+              url: finalUrl,
+              type: "mp4",
+              quality: "1080p",
+              headers: { "User-Agent": DEFAULT_UA }
+            };
+          }
           return {
-            url: src,
-            type: "embed",
-            quality
+            url: "https://drive.usercontent.google.com/download?id=" + fileId + "&export=download&confirm=t",
+            type: "mp4",
+            quality: "1080p",
+            headers: { "User-Agent": DEFAULT_UA }
+          };
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || signal && signal.aborted)) throw e;
+          return null;
+        }
+      });
+    }
+    function resolveOkRuStream(okUrl, signal) {
+      return __async(this, null, function* () {
+        var match = okUrl.match(/(?:odnoklassniki\.ru|ok\.ru)\/videoembed\/([0-9]+)/i);
+        if (!match) return null;
+        var videoId = match[1];
+        try {
+          var embedPageUrl = "https://odnoklassniki.ru/videoembed/" + videoId;
+          var res = yield fetchWithTimeout(embedPageUrl, {
+            headers: {
+              "User-Agent": DEFAULT_UA,
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            },
+            signal
+          }, 5e3);
+          if (!res.ok) return null;
+          var html = yield res.text();
+          if (html.indexOf("vp_video_stub") !== -1 || html.indexOf('data-module="OKVideo"') === -1) {
+            return null;
+          }
+          var $ = cheerio.load(html);
+          var dataOptions = $('div[data-module="OKVideo"]').attr("data-options");
+          if (!dataOptions) return null;
+          var parsed = JSON.parse(dataOptions);
+          var metadata = parsed.flashvars && parsed.flashvars.metadata;
+          if (typeof metadata === "string") {
+            try {
+              metadata = JSON.parse(metadata);
+            } catch (_) {
+            }
+          }
+          if (!metadata) return null;
+          var okHeaders = {
+            "User-Agent": DEFAULT_UA,
+            "Referer": "https://odnoklassniki.ru/"
+          };
+          if (metadata.hlsMasterPlaylistUrl) {
+            return {
+              url: metadata.hlsMasterPlaylistUrl,
+              type: "hls",
+              quality: "1080p",
+              headers: okHeaders
+            };
+          }
+          var videos = Array.isArray(metadata.videos) ? metadata.videos : [];
+          if (!videos.length) return null;
+          var qualityRank = { "full": 1080, "hd": 720, "sd": 480, "low": 360, "lowest": 240, "mobile": 144 };
+          videos.sort(function(a, b) {
+            return (qualityRank[b.name] || 0) - (qualityRank[a.name] || 0);
+          });
+          var chosen = videos[0];
+          var qStr = chosen.name === "full" || chosen.name === "1080" ? "1080p" : chosen.name === "hd" ? "720p" : "480p";
+          return {
+            url: chosen.url,
+            type: "mp4",
+            quality: qStr,
+            headers: okHeaders
+          };
+        } catch (e) {
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || signal && signal.aborted)) throw e;
+          return null;
+        }
+      });
+    }
+    function resolvePlayerStream(pHtml, playerUrl, docHtml, targetEpisode, docPageUrl, signal) {
+      return __async(this, null, function* () {
+        if (!pHtml || typeof pHtml !== "string") return null;
+        var $ = cheerio.load(pHtml);
+        var rawSrc = $("iframe[src]").attr("src") || $("video source[src], video[src]").attr("src");
+        if (!rawSrc) {
+          var scripts = $("script").map(function() {
+            return $(this).html() || "";
+          }).get().join("\n");
+          var directMatch = scripts.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i);
+          if (directMatch && directMatch[1]) rawSrc = directMatch[1];
+        }
+        if (!rawSrc) return null;
+        if (rawSrc.indexOf("//") === 0) rawSrc = "https:" + rawSrc;
+        var nestedMatch = rawSrc.match(/https?:\/\/[^/]+\/.*?(https?:\/\/.+)/i);
+        if (nestedMatch && nestedMatch[1]) rawSrc = nestedMatch[1];
+        if (/theblacklist711tr\.mp4|googleapis\.com|recaptcha/i.test(rawSrc)) {
+          return null;
+        }
+        var has1080p = /1080p?/i.test(pHtml) || targetEpisode && /1080p?/i.test(targetEpisode.title) || docHtml && /1080p?/i.test(docHtml);
+        var fallbackQuality = has1080p ? "1080p" : "720p";
+        if (/drive\.google\.com/i.test(rawSrc)) {
+          var driveStream = yield resolveGoogleDriveStream(rawSrc, signal);
+          if (driveStream) return driveStream;
+        }
+        if (/odnoklassniki\.ru|ok\.ru/i.test(rawSrc)) {
+          var okStream = yield resolveOkRuStream(rawSrc, signal);
+          if (okStream) return okStream;
+        }
+        if (/\.(mp4|m3u8)(\?|$)/i.test(rawSrc)) {
+          return {
+            url: rawSrc,
+            type: rawSrc.indexOf(".m3u8") !== -1 ? "hls" : "mp4",
+            quality: fallbackQuality,
+            headers: {
+              "User-Agent": DEFAULT_UA,
+              "Referer": docPageUrl
+            }
           };
         }
-      }
-      var videoSrc = $("video source[src]").first().attr("src") || $("video[src]").first().attr("src");
-      if (videoSrc) {
-        if (videoSrc.indexOf("//") === 0) videoSrc = "https:" + videoSrc;
-        if (/^https?:\/\//i.test(videoSrc)) {
-          var isHls = videoSrc.indexOf(".m3u8") !== -1;
-          return {
-            url: videoSrc,
-            type: isHls ? "hls" : "mp4",
-            quality
-          };
-        }
-      }
-      var scripts = $("script").map(function() {
-        return $(this).html() || "";
-      }).get().join("\n");
-      var directMatch = scripts.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i);
-      if (directMatch && directMatch[1]) {
-        var mediaUrl = directMatch[1];
-        var isHlsMedia = mediaUrl.indexOf(".m3u8") !== -1;
-        return {
-          url: mediaUrl,
-          type: isHlsMedia ? "hls" : "mp4",
-          quality
-        };
-      }
-      return null;
+        return null;
+      });
     }
     function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
       return __async(this, null, function* () {
@@ -979,7 +1151,7 @@ var require_belgeselx = __commonJS({
           var targetDocUrl = null;
           var docHtml = null;
           var candidateSlugs = [];
-          var titlesToCheck = [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)].filter(Boolean);
+          var titlesToCheck = [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)].concat(info.altTitles || []).filter(Boolean);
           titlesToCheck.forEach(function(t) {
             var s = slugify(t);
             if (s && candidateSlugs.indexOf(s) === -1) candidateSlugs.push(s);
@@ -1014,6 +1186,7 @@ var require_belgeselx = __commonJS({
               if (q2 && searchQueries.indexOf(q2) === -1) searchQueries.push(q2);
             });
             var bestCandidate = null;
+            var allCandidateTitles = [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)].concat(info.altTitles || []).filter(Boolean);
             for (var qIdx = 0; qIdx < searchQueries.length; qIdx++) {
               var q = searchQueries[qIdx];
               if (!q) continue;
@@ -1024,11 +1197,13 @@ var require_belgeselx = __commonJS({
               var $search = cheerio.load(sHtml);
               var candidates = parseSearchCandidates($search, BASE_URL);
               if (candidates.length === 0) continue;
-              var cleanTr = cleanTitle(trTitle);
-              var cleanOrg = cleanTitle(orgTitle);
-              bestCandidate = pickBestCandidate(candidates, trTitle, targetYear, { minCoverage: 0.5, minScore: 40 }) || (cleanTr ? pickBestCandidate(candidates, cleanTr, targetYear, { minCoverage: 0.5, minScore: 40 }) : null);
-              if (!bestCandidate && orgTitle) {
-                bestCandidate = pickBestCandidate(candidates, orgTitle, targetYear, { minCoverage: 0.5, minScore: 40 }) || (cleanOrg ? pickBestCandidate(candidates, cleanOrg, targetYear, { minCoverage: 0.5, minScore: 40 }) : null);
+              for (var tIdx = 0; tIdx < allCandidateTitles.length; tIdx++) {
+                var testTitle = allCandidateTitles[tIdx];
+                bestCandidate = pickBestCandidate(candidates, testTitle, targetYear, { minCoverage: 0.5, minScore: 40 });
+                if (bestCandidate && bestCandidate.href) break;
+              }
+              if (!bestCandidate) {
+                bestCandidate = pickDocumentaryFallback(candidates, trTitle || orgTitle, targetYear, seasonNum);
               }
               if (bestCandidate && bestCandidate.href) {
                 targetDocUrl = bestCandidate.href;
@@ -1088,9 +1263,9 @@ var require_belgeselx = __commonJS({
               }, 4e3);
               if (!pRes.ok) continue;
               var pHtml = yield pRes.text();
-              var extracted = extractStreamFromPlayerHtml(pHtml, playerUrl, docHtml, targetEpisode);
-              if (extracted && extracted.url) {
-                var streamHeaders = {
+              var resolved = yield resolvePlayerStream(pHtml, playerUrl, docHtml, targetEpisode, docPageUrl, signal);
+              if (resolved && resolved.url) {
+                var streamHeaders = resolved.headers || {
                   "User-Agent": WORKING_HEADERS["User-Agent"],
                   "Referer": docPageUrl
                 };
@@ -1099,9 +1274,9 @@ var require_belgeselx = __commonJS({
                 streams.push({
                   name: displayTitle,
                   title: "\u231C " + PROVIDER_NAME + " \u231F | " + displayTitle + epTitlePart + seasonEpPart + " [TR Dublaj]",
-                  url: extracted.url,
-                  quality: extracted.quality || "720p",
-                  type: extracted.type || (extracted.url.indexOf(".m3u8") !== -1 ? "hls" : "mp4"),
+                  url: resolved.url,
+                  quality: resolved.quality || "720p",
+                  type: resolved.type || (resolved.url.indexOf(".m3u8") !== -1 ? "hls" : "mp4"),
                   provider: "belgeselx",
                   headers: streamHeaders,
                   behaviorHints: {

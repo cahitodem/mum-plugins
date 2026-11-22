@@ -737,3 +737,164 @@ test('RoketDizi: Bundle VM execution test from manifest.json scraper', async () 
   }).filter(Boolean).at(-1);
   assert.equal(animeReport.status, 'unsupported-type');
 });
+
+// ── 11. "A Friend, A Murderer" (TMDB 315755, Virgüllü Başlık, EN/TR Arama, Iframe Fallback ve Pichive) ──
+
+test('RoketDizi: A Friend, A Murderer (TMDB 315755) resolves comma-title, EN/TR fallback, 403 iframe fallback, and PoW', async () => {
+  const encEp1 = createEncPayload('https://four.pichive.online/iframe.php?v=friend_ep1', 'key_ep1_secret');
+  const encEp2 = createEncPayload('https://four.pichive.online/iframe.php?v=friend_ep2', 'key_ep2_secret');
+  const requestedUrls = [];
+
+  const fetchMock = async (url) => {
+    const u = String(url);
+    requestedUrls.push(u);
+
+    // 1. TMDB Çok Dilli Başlıklar
+    if (u.includes('api.themoviedb.org/3/tv/315755')) {
+      if (u.includes('language=tr-TR')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            name: 'Bir Arkadaş, Bir Katil',
+            original_name: 'En ven, en morder',
+            first_air_date: '2023-10-12'
+          })
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          name: 'A Friend, A Murderer',
+          original_name: 'En ven, en morder',
+          first_air_date: '2023-10-12'
+        })
+      };
+    }
+
+    // 2. RoketDizi Arama
+    // İlk arama: Türkçe başlık (sitede bulunamaz)
+    if (u.includes('s=Bir%20Arkada%C5%9F%2C%20Bir%20Katil') || u.includes('s=Bir Arkadaş, Bir Katil')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '<div class="no-results">Sonuç bulunamadı</div>'
+      };
+    }
+
+    // İkinci arama: İngilizce başlık ("A Friend, A Murderer") - virgüllü aria-label
+    if (u.includes('s=A%20Friend%2C%20A%20Murderer') || u.includes('s=A Friend, A Murderer')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <div class="search-results">
+            <a href="/dizi/a-friend-a-murderer" aria-label="A Friend, A Murderer, 2023">A Friend, A Murderer</a>
+          </div>
+        `
+      };
+    }
+
+    // 3. Bölüm 1 Sayfası
+    if (u === 'https://roketdizi.life/dizi/a-friend-a-murderer/sezon-1/bolum-1') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <body>
+              <script>
+                self.__next_f.push([1,"{\\"enc\\":{\\"ciphertext\\":\\"${encEp1.ciphertext}\\",\\"iv\\":\\"${encEp1.iv}\\",\\"salt\\":\\"${encEp1.salt}\\"},\\"k\\":\\"${encEp1.k}\\"}"]);
+              </script>
+            </body>
+          </html>
+        `
+      };
+    }
+
+    // 4. Bölüm 2 Sayfası
+    if (u === 'https://roketdizi.life/dizi/a-friend-a-murderer/sezon-1/bolum-2') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <body>
+              <script>
+                self.__next_f.push([1,"{\\"enc\\":{\\"ciphertext\\":\\"${encEp2.ciphertext}\\",\\"iv\\":\\"${encEp2.iv}\\",\\"salt\\":\\"${encEp2.salt}\\"},\\"k\\":\\"${encEp2.k}\\"}"]);
+              </script>
+            </body>
+          </html>
+        `
+      };
+    }
+
+    // 5. Pichive Iframe: Bölüm 1 için 403 Forbidden (Cloudflare Bot Engeli)
+    if (u === 'https://four.pichive.online/iframe.php?v=friend_ep1') {
+      return {
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden (Cloudflare Bot Protection)'
+      };
+    }
+
+    // 6. Pichive Iframe: Bölüm 2 için 200 OK + NP_GATE PoW & NP_CONFIG
+    if (u === 'https://four.pichive.online/iframe.php?v=friend_ep2') {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <script>
+              window.NP_GATE = { "n": "testnonce_7" };
+              window.NP_CONFIG = {
+                "file": "https://four.pichive.online/hls/friend_ep2/master.m3u8",
+                "tracks": [
+                  { "file": "/sub/tr.vtt", "label": "Türkçe", "srclang": "tr" }
+                ]
+              };
+            </script>
+          </html>
+        `
+      };
+    }
+
+    throw new Error('Unexpected URL in Test 11: ' + u);
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = fetchMock;
+
+  try {
+    // A. Bölüm 1 Testi: Pichive 403 döndüğünde ProviderError fırlatılmamalı, doğrudan iframe fallback yayını dönmeli
+    const streamsEp1 = await roketdizi.getStreams('315755', 'tv', 1, 1);
+    assert.equal(streamsEp1.length, 1, '403 durumunda deşifre edilmiş iframe adresi fallback olarak dönmeli');
+    assert.equal(streamsEp1[0].url, 'https://four.pichive.online/iframe.php?v=friend_ep1');
+    assert.equal(streamsEp1[0].type, 'hls');
+    assert.equal(streamsEp1[0].provider, 'roketdizi');
+    assert.equal(streamsEp1[0].headers.Referer, 'https://roketdizi.life/');
+
+    // B. Bölüm 2 Testi: Pichive 200 döndüğünde PoW çözülüp m3u8 adresi çözümlenmeli
+    const streamsEp2 = await roketdizi.getStreams('315755', 'tv', 1, 2);
+    assert.equal(streamsEp2.length, 1, '200 durumunda PoW çözülmüş m3u8 yayını dönmeli');
+    assert.equal(streamsEp2[0].url, 'https://four.pichive.online/hls/friend_ep2/master.m3u8?p=93');
+    assert.equal(streamsEp2[0].type, 'hls');
+    assert.equal(streamsEp2[0].subtitles.length, 1);
+    assert.equal(streamsEp2[0].subtitles[0].url, 'https://four.pichive.online/sub/tr.vtt?p=93');
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  // C. Bundled Adapter Testi: Bundle VM içinde 403 iframe fallback'in başarıyla sources-found üretmesi
+  // Önce bundle'ı derleyelim ve yükleyelim
+  const { provider, reports } = loadBundle(fetchMock);
+  const bundledStreams = await provider.getStreams('315755', 'tv', 1, 1);
+  assert.equal(bundledStreams.length, 1);
+  assert.equal(bundledStreams[0].url, 'https://four.pichive.online/iframe.php?v=friend_ep1');
+  const lastReport = reports.map(r => {
+    try { return JSON.parse(r.replace(/^\[MUM\]\s*/, '')); } catch (_) { return null; }
+  }).filter(Boolean).at(-1);
+  assert.equal(lastReport.status, 'sources-found');
+  assert.equal(lastReport.count, 1);
+});

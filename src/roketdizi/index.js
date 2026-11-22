@@ -49,7 +49,8 @@ async function resolveTmdbInfo(id, mediaType, signal) {
     if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
 
     var numericId = null;
-    var title = '';
+    var titleTr = '';
+    var titleEn = '';
     var origTitle = '';
     var year = '';
 
@@ -66,7 +67,7 @@ async function resolveTmdbInfo(id, mediaType, signal) {
           : ((fData.tv_results && fData.tv_results[0]) || (fData.movie_results && fData.movie_results[0]));
         if (item) {
           numericId = item.id;
-          title = item.title || item.name || '';
+          titleEn = item.title || item.name || '';
           origTitle = item.original_title || item.original_name || '';
           var date = item.release_date || item.first_air_date || '';
           if (date) year = String(date).split('-')[0];
@@ -76,8 +77,9 @@ async function resolveTmdbInfo(id, mediaType, signal) {
       numericId = cleanId;
     }
 
-    if (numericId && (!title || !origTitle || !year)) {
+    if (numericId) {
       var endpoint = (mediaType === 'movie') ? 'movie' : 'tv';
+      // 1. Türkçe başlık çekme
       var tRes = await fetchWithTimeout(
         'https://api.themoviedb.org/3/' + endpoint + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR',
         { signal: signal },
@@ -85,17 +87,39 @@ async function resolveTmdbInfo(id, mediaType, signal) {
       );
       if (tRes.ok) {
         var tData = await tRes.json();
-        title = tData.title || tData.name || title;
+        titleTr = tData.title || tData.name || '';
         origTitle = tData.original_title || tData.original_name || origTitle;
         var tDate = tData.release_date || tData.first_air_date || '';
         if (!year && tDate) year = String(tDate).split('-')[0];
       }
+
+      // 2. İngilizce / Uluslararası başlık çekme
+      var enRes = await fetchWithTimeout(
+        'https://api.themoviedb.org/3/' + endpoint + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=en-US',
+        { signal: signal },
+        8000
+      );
+      if (enRes.ok) {
+        var enData = await enRes.json();
+        titleEn = enData.title || enData.name || titleEn;
+        if (!origTitle) origTitle = enData.original_title || enData.original_name || '';
+        var enDate = enData.release_date || enData.first_air_date || '';
+        if (!year && enDate) year = String(enDate).split('-')[0];
+      }
     }
 
-    return { title: title, origTitle: origTitle, numericId: numericId, year: year };
+    var title = titleTr || titleEn || origTitle;
+    return {
+      title: title,
+      titleTr: titleTr,
+      titleEn: titleEn,
+      origTitle: origTitle,
+      numericId: numericId,
+      year: year
+    };
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
-    return { title: '', origTitle: '', numericId: id, year: '' };
+    return { title: '', titleTr: '', titleEn: '', origTitle: '', numericId: id, year: '' };
   }
 }
 
@@ -115,10 +139,14 @@ function parseSearchResults(html) {
       var title = '';
       var year = '';
       if (aria) {
-        var parts = aria.split(',').map(function(s) { return s.trim(); });
-        title = parts[0] || '';
-        if (parts[1] && /^\d{4}$/.test(parts[1])) {
-          year = parts[1];
+        var ariaMatch = aria.match(/^(.*?),\s*(\d{4})/);
+        if (ariaMatch) {
+          title = ariaMatch[1].trim();
+          year = ariaMatch[2].trim();
+        } else {
+          var parts = aria.split(',').map(function(s) { return s.trim(); });
+          title = parts[0] || '';
+          if (parts[1] && /^\d{4}$/.test(parts[1])) year = parts[1];
         }
       }
       if (!title) {
@@ -204,26 +232,13 @@ async function searchRoketDizi(query, mediaType, signal) {
     }
   }
 
-  // Eğer arama sonucu boşsa ve doğrudan slug mevcutsa doğrudan aday olarak ekle
-  if (candidates.length === 0 && query) {
-    var slug = toSlug(query);
-    if (slug) {
-      candidates.push({
-        title: query,
-        href: mediaType === 'movie' ? ('/film/' + slug + '/izle') : ('/dizi/' + slug),
-        slug: slug,
-        year: '',
-        type: mediaType === 'movie' ? 'movie' : 'tv'
-      });
-    }
-  }
-
   return candidates;
 }
 
 // ── AES-256-CBC Deşifreleme ───────────────────────────────────────────
 function extractEncParams(html) {
-  var encMatch = html.match(/\\"enc\\":\{\\"ciphertext\\":\\"([^"\\]+)\\",\\"iv\\":\\"([0-9a-fA-F]+)\\",\\"salt\\":\\"([0-9a-fA-F]+)\\"\},\\"k\\":\\"([a-zA-Z0-9]+)\\"/);
+  if (!html) return null;
+  var encMatch = html.match(/\\"enc\\"\s*:\s*\{\\"ciphertext\\"\s*:\s*\\"([^"\\]+)\\",\\"iv\\"\s*:\s*\\"([0-9a-fA-F]+)\\",\\"salt\\"\s*:\s*\\"([0-9a-fA-F]+)\\"\}\s*,\s*\\"k\\"\s*:\s*\\"([^"\\]+)\\"/);
   if (encMatch) {
     return {
       ciphertext: encMatch[1],
@@ -232,7 +247,7 @@ function extractEncParams(html) {
       k: encMatch[4]
     };
   }
-  var unescapedMatch = html.match(/"enc":\{"ciphertext":"([^"]+)","iv":"([0-9a-fA-F]+)","salt":"([0-9a-fA-F]+)"\},"k":"([a-zA-Z0-9]+)"/);
+  var unescapedMatch = html.match(/"enc"\s*:\s*\{"ciphertext"\s*:\s*"([^"]+)","iv"\s*:\s*"([0-9a-fA-F]+)","salt"\s*:\s*"([0-9a-fA-F]+)"\}\s*,\s*"k"\s*:\s*"([^"]+)"/);
   if (unescapedMatch) {
     return {
       ciphertext: unescapedMatch[1],
@@ -338,6 +353,33 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
   var normalizedIframeUrl = toAbsoluteUrl(iframeUrl, BASE_URL);
   if (!/^https?:\/\//i.test(normalizedIframeUrl)) return null;
 
+  var langFlag = isDublaj ? '🇹🇷 Türkçe Dublaj' : '🌐 Türkçe Altyazı';
+  var streamTitle = (mediaType === 'movie')
+    ? '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + langFlag
+    : '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + langFlag + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm';
+
+  var fallbackHeaders = {
+    'User-Agent': WORKING_HEADERS['User-Agent'],
+    'Referer': BASE_URL + '/'
+  };
+
+  function createFallbackStream() {
+    return {
+      name: displayName,
+      title: streamTitle,
+      url: normalizedIframeUrl,
+      quality: qualityLabel || '1080p',
+      type: 'hls',
+      headers: fallbackHeaders,
+      behaviorHints: {
+        notWebReady: true,
+        proxyHeaders: { request: fallbackHeaders }
+      },
+      subtitles: [],
+      provider: 'roketdizi'
+    };
+  }
+
   // Doğrudan video akışı verilmişse doğrudan nesneyi oluştur
   if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(normalizedIframeUrl)) {
     var isDirectMp4 = normalizedIframeUrl.includes('.mp4');
@@ -345,10 +387,6 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
       'User-Agent': WORKING_HEADERS['User-Agent'],
       'Referer': BASE_URL + '/'
     };
-    var flag = isDublaj ? '🇹🇷 Türkçe Dublaj' : '🌐 Türkçe Altyazı';
-    var streamTitle = (mediaType === 'movie')
-      ? '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + flag
-      : '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + flag + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm';
 
     return {
       name: displayName,
@@ -366,121 +404,126 @@ async function resolveIframe(iframeUrl, isDublaj, qualityLabel, displayName, sea
     };
   }
 
-  // Iframe sayfasını çek
-  var res = await fetchWithTimeout(normalizedIframeUrl, {
-    headers: {
+  try {
+    // Iframe sayfasını çek
+    var res = await fetchWithTimeout(normalizedIframeUrl, {
+      headers: {
+        'User-Agent': WORKING_HEADERS['User-Agent'],
+        'Referer': BASE_URL + '/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      },
+      signal: signal
+    }, 7000);
+
+    // Eğer 403 dönerse (Cloudflare bot koruması) veya ok değilse:
+    // KESİNLİKLE HTTP_BLOCKED fırlatmayın! Deşifre edilmiş iframe URL fallback döndürün.
+    if (!res.ok) {
+      return createFallbackStream();
+    }
+
+    var iframeHtml = await res.text();
+
+    // NP_GATE PoW çözümle
+    var gate = parseNpGate(iframeHtml);
+    var solution = solveNpGate(gate);
+
+    // NP_CONFIG ayrıştır
+    var config = parseNpConfig(iframeHtml);
+    var streamUrl = '';
+    var tracks = [];
+
+    if (config) {
+      if (typeof config.file === 'string') {
+        streamUrl = config.file;
+      } else if (Array.isArray(config.sources) && config.sources.length > 0) {
+        streamUrl = config.sources[0].file || config.sources[0].src || config.sources[0].url || '';
+      } else if (typeof config.stream === 'string') {
+        streamUrl = config.stream;
+      } else if (typeof config.url === 'string') {
+        streamUrl = config.url;
+      }
+      if (Array.isArray(config.tracks)) {
+        tracks = config.tracks;
+      } else if (Array.isArray(config.subtitles)) {
+        tracks = config.subtitles;
+      }
+    }
+
+    // Fallback: Regex ile streamUrl ve altyazı ara
+    if (!streamUrl) {
+      var m3u8Match = iframeHtml.match(/["'](https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)["']/i);
+      if (m3u8Match) streamUrl = m3u8Match[1];
+    }
+
+    if (!streamUrl) {
+      return createFallbackStream();
+    }
+
+    streamUrl = toAbsoluteUrl(streamUrl, normalizedIframeUrl);
+    if (!/^https?:\/\//i.test(streamUrl)) {
+      return createFallbackStream();
+    }
+
+    // PoW çözümünü akış URL'sine ekle
+    var finalStreamUrl = appendSolution(streamUrl, solution);
+
+    // Altyazıları biçimlendir
+    var subtitles = [];
+    for (var i = 0; i < tracks.length; i++) {
+      var t = tracks[i];
+      var subFile = t.file || t.src || t.url;
+      if (subFile) {
+        var fullSubUrl = toAbsoluteUrl(subFile, normalizedIframeUrl);
+        if (/^https?:\/\//i.test(fullSubUrl)) {
+          subtitles.push({
+            url: appendSolution(fullSubUrl, solution),
+            language: t.srclang || t.language || t.label || 'tr',
+            label: t.label || t.title || 'Türkçe'
+          });
+        }
+      }
+    }
+
+    // Eğer tracks bulunamadıysa HTML içindeki VTT/SRT linklerini topla
+    if (subtitles.length === 0) {
+      var subMatches = iframeHtml.matchAll(/["'](https?:\/\/[^"'\s]+\.(?:vtt|srt)[^"'\s]*)["']/gi);
+      for (var sm of subMatches) {
+        var sUrl = sm[1];
+        if (!subtitles.some(function(x) { return x.url.startsWith(sUrl); })) {
+          subtitles.push({
+            url: appendSolution(sUrl, solution),
+            language: 'tr',
+            label: 'Türkçe'
+          });
+        }
+      }
+    }
+
+    var sHeaders = {
       'User-Agent': WORKING_HEADERS['User-Agent'],
-      'Referer': BASE_URL + '/',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    },
-    signal: signal
-  }, 7000);
+      'Referer': normalizedIframeUrl
+    };
 
-  if (res.status === 403) {
-    throw new ProviderError('HTTP_BLOCKED', 'Pichive Cloudflare Blocked', 'player', 403);
+    var isMp4 = finalStreamUrl.includes('.mp4');
+
+    return {
+      name: displayName,
+      title: streamTitle,
+      url: finalStreamUrl,
+      quality: qualityLabel || '1080p',
+      type: isMp4 ? 'mp4' : 'hls',
+      headers: sHeaders,
+      behaviorHints: {
+        notWebReady: true,
+        proxyHeaders: { request: sHeaders }
+      },
+      subtitles: subtitles,
+      provider: 'roketdizi'
+    };
+  } catch (err) {
+    if (err && (err.name === 'AbortError' || err.message === 'TIMEOUT')) throw err;
+    return createFallbackStream();
   }
-  if (!res.ok) return null;
-
-  var iframeHtml = await res.text();
-
-  // NP_GATE PoW çözümle
-  var gate = parseNpGate(iframeHtml);
-  var solution = solveNpGate(gate);
-
-  // NP_CONFIG ayrıştır
-  var config = parseNpConfig(iframeHtml);
-  var streamUrl = '';
-  var tracks = [];
-
-  if (config) {
-    if (typeof config.file === 'string') {
-      streamUrl = config.file;
-    } else if (Array.isArray(config.sources) && config.sources.length > 0) {
-      streamUrl = config.sources[0].file || config.sources[0].src || config.sources[0].url || '';
-    } else if (typeof config.stream === 'string') {
-      streamUrl = config.stream;
-    } else if (typeof config.url === 'string') {
-      streamUrl = config.url;
-    }
-    if (Array.isArray(config.tracks)) {
-      tracks = config.tracks;
-    } else if (Array.isArray(config.subtitles)) {
-      tracks = config.subtitles;
-    }
-  }
-
-  // Fallback: Regex ile streamUrl ve altyazı ara
-  if (!streamUrl) {
-    var m3u8Match = iframeHtml.match(/["'](https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)["']/i);
-    if (m3u8Match) streamUrl = m3u8Match[1];
-  }
-
-  if (!streamUrl) return null;
-
-  streamUrl = toAbsoluteUrl(streamUrl, normalizedIframeUrl);
-  if (!/^https?:\/\//i.test(streamUrl)) return null;
-
-  // PoW çözümünü akış URL'sine ekle
-  var finalStreamUrl = appendSolution(streamUrl, solution);
-
-  // Altyazıları biçimlendir
-  var subtitles = [];
-  for (var i = 0; i < tracks.length; i++) {
-    var t = tracks[i];
-    var subFile = t.file || t.src || t.url;
-    if (subFile) {
-      var fullSubUrl = toAbsoluteUrl(subFile, normalizedIframeUrl);
-      if (/^https?:\/\//i.test(fullSubUrl)) {
-        subtitles.push({
-          url: appendSolution(fullSubUrl, solution),
-          language: t.srclang || t.language || t.label || 'tr',
-          label: t.label || t.title || 'Türkçe'
-        });
-      }
-    }
-  }
-
-  // Eğer tracks bulunamadıysa HTML içindeki VTT/SRT linklerini topla
-  if (subtitles.length === 0) {
-    var subMatches = iframeHtml.matchAll(/["'](https?:\/\/[^"'\s]+\.(?:vtt|srt)[^"'\s]*)["']/gi);
-    for (var sm of subMatches) {
-      var sUrl = sm[1];
-      if (!subtitles.some(function(x) { return x.url.startsWith(sUrl); })) {
-        subtitles.push({
-          url: appendSolution(sUrl, solution),
-          language: 'tr',
-          label: 'Türkçe'
-        });
-      }
-    }
-  }
-
-  var sHeaders = {
-    'User-Agent': WORKING_HEADERS['User-Agent'],
-    'Referer': normalizedIframeUrl
-  };
-
-  var langFlag = isDublaj ? '🇹🇷 Türkçe Dublaj' : '🌐 Türkçe Altyazı';
-  var titleStr = (mediaType === 'movie')
-    ? '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + langFlag
-    : '⌜ ' + PROVIDER_NAME + ' ⌟ | RoketTV | ' + langFlag + ' · ' + seasonNum + '. Sezon ' + episodeNum + '. Bölüm';
-
-  var isMp4 = finalStreamUrl.includes('.mp4');
-
-  return {
-    name: displayName,
-    title: titleStr,
-    url: finalStreamUrl,
-    quality: qualityLabel || '1080p',
-    type: isMp4 ? 'mp4' : 'hls',
-    headers: sHeaders,
-    behaviorHints: {
-      notWebReady: true,
-      proxyHeaders: { request: sHeaders }
-    },
-    subtitles: subtitles,
-    provider: 'roketdizi'
-  };
 }
 
 // ── Ana Akış Getirici (getStreams) ────────────────────────────────────
@@ -491,7 +534,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
 
     // 1. TMDB Meta Verisi
     var info = await resolveTmdbInfo(tmdbId, mediaType, signal);
-    var searchQueries = [info.title, info.origTitle].filter(Boolean);
+    var searchQueries = [...new Set([info.titleTr, info.titleEn, info.origTitle, info.title].filter(Boolean))];
     if (searchQueries.length === 0) {
       return [];
     }

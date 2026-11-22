@@ -148,6 +148,9 @@ var require_config = __commonJS({
           },
           yabancidizi: {
             base: "https://yabancidizi.news"
+          },
+          belgeselx: {
+            base: "https://belgeselx.com"
           }
         },
         movies: {
@@ -443,11 +446,284 @@ var require_http = __commonJS({
       }
       return fetch(url, options);
     }
+    var MAX_CACHE_SIZE = 500;
+    var DEFAULT_TTL_MS = 36e5;
+    function createTmdbCache() {
+      var store = /* @__PURE__ */ new Map();
+      var cacheObj = {
+        get: function(key) {
+          if (!store.has(key)) return void 0;
+          var entry = store.get(key);
+          if (Date.now() > entry.expiresAt) {
+            store.delete(key);
+            return void 0;
+          }
+          store.delete(key);
+          store.set(key, entry);
+          return entry.value;
+        },
+        set: function(key, value, ttlMs) {
+          if (store.size >= MAX_CACHE_SIZE && !store.has(key)) {
+            var firstKey = store.keys().next().value;
+            if (firstKey !== void 0) store.delete(firstKey);
+          }
+          var expiresAt = Date.now() + (typeof ttlMs === "number" && ttlMs > 0 ? ttlMs : DEFAULT_TTL_MS);
+          if (store.has(key)) store.delete(key);
+          store.set(key, { value, expiresAt });
+          return this;
+        },
+        has: function(key) {
+          if (!store.has(key)) return false;
+          var entry = store.get(key);
+          if (Date.now() > entry.expiresAt) {
+            store.delete(key);
+            return false;
+          }
+          return true;
+        },
+        delete: function(key) {
+          return store.delete(key);
+        },
+        clear: function() {
+          store.clear();
+        },
+        get size() {
+          return store.size;
+        }
+      };
+      if (typeof Proxy !== "undefined") {
+        return new Proxy(cacheObj, {
+          get: function(target, prop) {
+            if (typeof prop === "string" && prop in target) {
+              var member = target[prop];
+              if (typeof member === "function") return member.bind(target);
+              return member;
+            }
+            if (typeof prop === "symbol") return target[prop];
+            return target.get(prop);
+          },
+          set: function(target, prop, value) {
+            if (typeof prop === "symbol" || prop in target) {
+              target[prop] = value;
+              return true;
+            }
+            target.set(prop, value);
+            return true;
+          }
+        });
+      }
+      return cacheObj;
+    }
+    var _g = typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof window !== "undefined" ? window : exports2;
+    if (!_g.__MUM_TMDB_CACHE__) {
+      _g.__MUM_TMDB_CACHE__ = createTmdbCache();
+    }
+    var tmdb_cache = _g.__MUM_TMDB_CACHE__;
+    if (!_g.__MUM_TMDB_IN_FLIGHT__) {
+      _g.__MUM_TMDB_IN_FLIGHT__ = /* @__PURE__ */ new Map();
+    }
+    var in_flight_tmdb = _g.__MUM_TMDB_IN_FLIGHT__;
+    function makeTmdbCacheKey(mediaType, cleanId, language) {
+      var type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
+      var id = String(cleanId || "").trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, "");
+      if (id.includes(":")) id = id.split(":")[0];
+      var lang = String(language || "tr-TR").trim().toLowerCase();
+      return type + ":" + id + ":" + lang;
+    }
+    function getCachedTmdb(mediaType, cleanId, language) {
+      var key = makeTmdbCacheKey(mediaType, cleanId, language);
+      return tmdb_cache.get(key);
+    }
+    function setCachedTmdb(mediaType, cleanId, data, language, ttlMs) {
+      var key = makeTmdbCacheKey(mediaType, cleanId, language);
+      tmdb_cache.set(key, data, ttlMs);
+    }
+    function resolveTmdbMeta(id, mediaType, options) {
+      return __async(this, null, function* () {
+        options = options || {};
+        var rawId = typeof id === "object" && id && id.id ? id.id : id;
+        if (typeof id === "object" && id) {
+          if (!mediaType && id.type) mediaType = id.type;
+          if (!options.signal && id.signal) options.signal = id.signal;
+        }
+        var cleanId = String(rawId || "").trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, "");
+        if (cleanId.includes(":")) cleanId = cleanId.split(":")[0];
+        if (!cleanId) return null;
+        var isTv = mediaType === "tv" || mediaType === "series";
+        var type = isTv ? "tv" : "movie";
+        var isImdb = cleanId.startsWith("tt");
+        var lang = (options.language || "tr-TR").trim().toLowerCase();
+        var apiKey = options.apiKey || "500330721680edb6d5f7f12ba7cd9023";
+        var timeoutMs = options.timeoutMs || 8e3;
+        var callerSignal = options.signal;
+        if (callerSignal && callerSignal.aborted) {
+          var errAbort = new Error("The operation was aborted");
+          errAbort.name = "AbortError";
+          throw errAbort;
+        }
+        var cacheKey = makeTmdbCacheKey(type, cleanId, lang);
+        var cached = tmdb_cache.get(cacheKey);
+        if (cached) {
+          return cached;
+        }
+        var inFlightEntry = in_flight_tmdb.get(cacheKey);
+        var subscriberToken = { signal: callerSignal };
+        if (!inFlightEntry) {
+          var abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+          var subscribers = /* @__PURE__ */ new Set();
+          subscribers.add(subscriberToken);
+          var sharedPromise = (function() {
+            return __async(this, null, function* () {
+              try {
+                var title = "";
+                var origTitle = "";
+                var year = "";
+                var imdbId = isImdb ? cleanId : "";
+                var numericId = isImdb ? null : parseInt(cleanId, 10) || null;
+                var originCountries = [];
+                var origLanguage = "";
+                var fetchSignal = abortController ? abortController.signal : null;
+                if (isImdb) {
+                  var findRes = yield fetchWithTimeout(
+                    "https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + apiKey + "&external_source=imdb_id&language=" + lang,
+                    { signal: fetchSignal },
+                    timeoutMs
+                  );
+                  if (findRes.ok) {
+                    var fData = yield findRes.json();
+                    var match = isTv ? fData.tv_results && fData.tv_results[0] : fData.movie_results && fData.movie_results[0];
+                    if (!match) match = fData.movie_results && fData.movie_results[0] || fData.tv_results && fData.tv_results[0] || (fData.title || fData.name) && fData;
+                    if (match) {
+                      numericId = match.id || null;
+                      title = match.name || match.title || "";
+                      origTitle = match.original_name || match.original_title || "";
+                      var dStr = match.first_air_date || match.release_date || "";
+                      if (dStr) year = dStr.slice(0, 4);
+                      if (Array.isArray(match.origin_country)) originCountries = match.origin_country;
+                      if (match.original_language) origLanguage = match.original_language;
+                    }
+                  }
+                }
+                var needsDetails = !title || !origTitle || isTv && originCountries.length === 0;
+                if (numericId && needsDetails) {
+                  var detailsRes = yield fetchWithTimeout(
+                    "https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + apiKey + "&language=" + lang + "&append_to_response=external_ids",
+                    { signal: fetchSignal },
+                    timeoutMs
+                  );
+                  if (detailsRes.ok) {
+                    var dData = yield detailsRes.json();
+                    title = dData.name || dData.title || title;
+                    origTitle = dData.original_name || dData.original_title || origTitle;
+                    var dStr2 = dData.first_air_date || dData.release_date || "";
+                    if (dStr2 && !year) year = dStr2.slice(0, 4);
+                    if (Array.isArray(dData.origin_country) && dData.origin_country.length > 0) {
+                      originCountries = dData.origin_country;
+                    } else if (Array.isArray(dData.production_countries) && dData.production_countries.length > 0) {
+                      originCountries = dData.production_countries.map(function(p) {
+                        return p.iso_3166_1;
+                      }).filter(Boolean);
+                    }
+                    if (dData.original_language) origLanguage = dData.original_language;
+                    if (!imdbId && dData.external_ids && dData.external_ids.imdb_id) {
+                      imdbId = dData.external_ids.imdb_id;
+                    } else if (!imdbId && dData.imdb_id) {
+                      imdbId = dData.imdb_id;
+                    }
+                  }
+                }
+                var result = {
+                  title,
+                  origTitle,
+                  titleTr: title,
+                  titleEn: origTitle,
+                  year,
+                  imdbId: imdbId || (isImdb ? cleanId : ""),
+                  numericId,
+                  originCountries,
+                  origLanguage
+                };
+                var isValidMeta = Boolean(result.title || result.origTitle);
+                if (isValidMeta) {
+                  tmdb_cache.set(cacheKey, result);
+                  if (numericId) {
+                    var numKey = makeTmdbCacheKey(type, numericId, lang);
+                    if (numKey !== cacheKey) tmdb_cache.set(numKey, result);
+                  }
+                  if (imdbId) {
+                    var imdbKey = makeTmdbCacheKey(type, imdbId, lang);
+                    if (imdbKey !== cacheKey) tmdb_cache.set(imdbKey, result);
+                  }
+                }
+                return result;
+              } finally {
+                in_flight_tmdb.delete(cacheKey);
+              }
+            });
+          })();
+          inFlightEntry = {
+            promise: sharedPromise,
+            subscribers,
+            abortController
+          };
+          in_flight_tmdb.set(cacheKey, inFlightEntry);
+        } else {
+          inFlightEntry.subscribers.add(subscriberToken);
+        }
+        if (!callerSignal) {
+          return inFlightEntry.promise.finally(function() {
+            inFlightEntry.subscribers.delete(subscriberToken);
+          });
+        }
+        return new Promise(function(resolve, reject) {
+          var onAbort = function() {
+            inFlightEntry.subscribers.delete(subscriberToken);
+            if (inFlightEntry.subscribers.size === 0 && inFlightEntry.abortController) {
+              try {
+                inFlightEntry.abortController.abort(callerSignal.reason || new Error("The operation was aborted"));
+              } catch (_) {
+              }
+            }
+            var err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (callerSignal.aborted) {
+            return onAbort();
+          }
+          callerSignal.addEventListener("abort", onAbort, { once: true });
+          inFlightEntry.promise.then(
+            function(val) {
+              try {
+                callerSignal.removeEventListener("abort", onAbort);
+              } catch (_) {
+              }
+              inFlightEntry.subscribers.delete(subscriberToken);
+              resolve(val);
+            },
+            function(err) {
+              try {
+                callerSignal.removeEventListener("abort", onAbort);
+              } catch (_) {
+              }
+              inFlightEntry.subscribers.delete(subscriberToken);
+              reject(err);
+            }
+          );
+        });
+      });
+    }
     module2.exports = {
       DEFAULT_UA,
       timeoutSignal,
       combineSignals,
-      fetchWithTimeout
+      fetchWithTimeout,
+      tmdb_cache,
+      in_flight_tmdb,
+      makeTmdbCacheKey,
+      getCachedTmdb,
+      setCachedTmdb,
+      resolveTmdbMeta
     };
   }
 });
@@ -478,7 +754,7 @@ var require_hdfilmdelisi = __commonJS({
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
     var { pickBestCandidate } = require_matching();
-    var { fetchWithTimeout } = require_http();
+    var { fetchWithTimeout, resolveTmdbMeta } = require_http();
     var { ProviderError } = require_errors();
     var _cfgReady = null;
     function cfgReady() {
@@ -493,7 +769,7 @@ var require_hdfilmdelisi = __commonJS({
       return _cfgReady;
     }
     var BASE_URL = "https://hdfilmdelisi.one";
-    var TMDB_API_KEY = "500330721680edb6d5f7f12ba7cd9023";
+    var DIRECT_PROBE_TIMEOUT_MS = 3e3;
     var HEADERS = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -514,46 +790,8 @@ var require_hdfilmdelisi = __commonJS({
     function resolveTmdbInfo(id, mediaType, signal) {
       return __async(this, null, function* () {
         try {
-          var cleanId = String(id || "").trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, "");
-          if (cleanId.includes(":")) cleanId = cleanId.split(":")[0];
-          var title = "";
-          var origTitle = "";
-          var imdbId = "";
-          var year = "";
-          if (cleanId.startsWith("tt")) {
-            imdbId = cleanId;
-            var findRes = yield fetchWithTimeout("https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id", { signal }, 8e3);
-            if (findRes.ok) {
-              var fd = yield findRes.json();
-              var match = mediaType === "tv" || mediaType === "series" ? fd.tv_results && fd.tv_results[0] : fd.movie_results && fd.movie_results[0];
-              if (!match) match = fd.movie_results && fd.movie_results[0] || fd.tv_results && fd.tv_results[0];
-              if (match) {
-                title = match.name || match.title || "";
-                origTitle = match.original_name || match.original_title || "";
-                var rd0 = match.release_date || match.first_air_date || "";
-                if (rd0) year = rd0.split("-")[0];
-              }
-            }
-          } else {
-            var type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
-            var tRes = yield fetchWithTimeout("https://api.themoviedb.org/3/" + type + "/" + cleanId + "?api_key=" + TMDB_API_KEY + "&language=tr-TR", { signal }, 8e3);
-            if (tRes.ok) {
-              var td = yield tRes.json();
-              title = td.name || td.title || "";
-              origTitle = td.original_name || td.original_title || "";
-              var rd1 = td.release_date || td.first_air_date || "";
-              if (rd1) year = rd1.split("-")[0];
-              if (td.imdb_id) imdbId = td.imdb_id;
-            }
-            if (!imdbId && (mediaType === "tv" || mediaType === "series")) {
-              var extRes = yield fetchWithTimeout("https://api.themoviedb.org/3/tv/" + cleanId + "/external_ids?api_key=" + TMDB_API_KEY, { signal }, 8e3);
-              if (extRes.ok) {
-                var extData = yield extRes.json();
-                if (extData && extData.imdb_id) imdbId = extData.imdb_id;
-              }
-            }
-          }
-          return { title, origTitle, imdbId, year };
+          var meta = yield resolveTmdbMeta(id, mediaType, { signal });
+          return meta || { title: "", origTitle: "", imdbId: "", year: "" };
         } catch (e) {
           if (e && (e.name === "ProviderError" || e.name === "AbortError" || e.message === "TIMEOUT" || signal && signal.aborted)) {
             throw e;
@@ -583,6 +821,15 @@ var require_hdfilmdelisi = __commonJS({
     function pickBest(results, title, year) {
       return pickBestCandidate(results, title, year, { minCoverage: 0.75, minScore: 50 });
     }
+    function decodeBase64Safe(str) {
+      if (typeof atob === "function") {
+        return atob(str);
+      }
+      if (typeof Buffer !== "undefined") {
+        return Buffer.from(str, "base64").toString("binary");
+      }
+      return "";
+    }
     function vidmodyDecrypt(hex, key) {
       try {
         var sb = "";
@@ -590,16 +837,8 @@ var require_hdfilmdelisi = __commonJS({
           sb += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
         }
         var rev = sb.split("").reverse().join("");
-        var decoded;
-        if (typeof Buffer !== "undefined") {
-          decoded = Buffer.from(rev, "base64");
-        } else if (typeof atob === "function") {
-          var bin = atob(rev);
-          decoded = [];
-          for (var k = 0; k < bin.length; k++) decoded.push(bin.charCodeAt(k));
-        } else {
-          return "";
-        }
+        var decoded = decodeBase64Safe(rev);
+        if (!decoded) return "";
         var out = "";
         for (var b = 0; b < decoded.length; b++) {
           var byte = typeof decoded[b] === "number" ? decoded[b] : decoded.charCodeAt(b);
@@ -612,37 +851,119 @@ var require_hdfilmdelisi = __commonJS({
         return "";
       }
     }
+    function vixolityPlayerDecrypt(hex, key) {
+      try {
+        var s1 = "";
+        for (var i = 0; i < hex.length; i += 2) {
+          s1 += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+        }
+        var rev = s1.split("").reverse().join("");
+        var s2 = decodeBase64Safe(rev);
+        var s3 = "";
+        for (var j = 0; j < s2.length; j++) {
+          var b = typeof s2[j] === "number" ? s2[j] : s2.charCodeAt(j);
+          s3 += String.fromCharCode((b - key + 256) % 256);
+        }
+        var s4 = decodeBase64Safe(s3);
+        try {
+          return decodeURIComponent(escape(s4));
+        } catch (_) {
+          return s4;
+        }
+      } catch (_) {
+        return "";
+      }
+    }
     function extractVidmodyFile(pageUrl, signal) {
       return __async(this, null, function* () {
         try {
           var res = yield fetchWithTimeout(pageUrl, { headers: HEADERS, signal }, 8e3);
           if (!res.ok) return null;
           var html = yield res.text();
-          var vm = html.match(/https?:[\\/]+player\.vidmody\.com[\\/][a-zA-Z0-9=\\/]+/);
+          var pageImdbMatch = html.match(/imdb\.com\/title\/(tt\d{7,10})/i) || html.match(/["']sameAs["']\s*:\s*["'][^"']*(tt\d{7,10})/i);
+          if (pageImdbMatch && pageImdbMatch[1]) {
+            var fastVixUrl = "https://ha.vixolity.com/vs/" + pageImdbMatch[1];
+            try {
+              var fvRes = yield fetchWithTimeout(fastVixUrl, { headers: VIXOLITY_HEADERS, signal }, DIRECT_PROBE_TIMEOUT_MS);
+              if (fvRes.ok) {
+                var fvTxt = yield fvRes.text();
+                if (fvTxt.includes("#EXTM3U")) {
+                  var fastSubs = parseVixolitySubtitles(fvTxt);
+                  return { file: fastVixUrl, playerUrl: pageUrl, subtitles: fastSubs, isHls: true };
+                }
+              }
+            } catch (_) {
+            }
+          }
+          var vixPlayerUrl = null;
+          var jsonLdMatch = html.match(/<script[^>]+id=["']jsonld-video["'][^>]*>([\s\S]*?)<\/script>/i);
+          if (jsonLdMatch) {
+            try {
+              var jsonLdData = JSON.parse(jsonLdMatch[1]);
+              if (jsonLdData && jsonLdData.embedUrl && jsonLdData.embedUrl.includes("vixolity.com")) {
+                vixPlayerUrl = jsonLdData.embedUrl;
+              }
+            } catch (_) {
+            }
+          }
+          if (!vixPlayerUrl) {
+            var plMatch = html.match(/https?:[\\/]+pl\.vixolity\.com[\\/][a-zA-Z0-9=_\-\\\/]+/);
+            if (plMatch) vixPlayerUrl = plMatch[0].split("\\").join("/");
+          }
+          if (vixPlayerUrl) {
+            var pRes = yield fetchWithTimeout(vixPlayerUrl, {
+              headers: { "User-Agent": HEADERS["User-Agent"], "Referer": pageUrl, "Origin": BASE_URL },
+              signal
+            }, 8e3);
+            if (pRes.ok) {
+              var pHtml = yield pRes.text();
+              var dMatch = pHtml.match(/\((?:function\s*\([^)]*\)\s*\{[\s\S]*?\})\)\s*\(\s*['"]([0-9a-fA-F]+)['"]\s*,\s*(\d+)\s*\)/);
+              if (dMatch) {
+                var decrypted = vixolityPlayerDecrypt(dMatch[1], parseInt(dMatch[2], 10));
+                var kaynakMatch = decrypted.match(/["']kaynak["']\s*:\s*["']([^"']+)["']/);
+                if (kaynakMatch) {
+                  var hlsUrl = kaynakMatch[1];
+                  var subs = [];
+                  try {
+                    var hlsRes = yield fetchWithTimeout(hlsUrl, { headers: VIXOLITY_HEADERS, signal }, DIRECT_PROBE_TIMEOUT_MS);
+                    if (hlsRes.ok) {
+                      var hlsTxt = yield hlsRes.text();
+                      if (hlsTxt.includes("#EXTM3U")) {
+                        subs = parseVixolitySubtitles(hlsTxt);
+                      }
+                    }
+                  } catch (_) {
+                  }
+                  return { file: hlsUrl, playerUrl: vixPlayerUrl, subtitles: subs, isHls: true };
+                }
+              }
+            }
+          }
+          var vm = html.match(/https?:[\\/]+player\.vidmody\.com[\\/][a-zA-Z0-9=\\\/]+/);
           if (!vm) return null;
           var playerUrl = vm[0].split("\\").join("/");
-          var pRes = yield fetchWithTimeout(playerUrl, {
+          var pRes2 = yield fetchWithTimeout(playerUrl, {
             headers: { "User-Agent": HEADERS["User-Agent"], "Referer": pageUrl },
             signal
           }, 8e3);
-          if (!pRes.ok) return null;
-          var pHtml = yield pRes.text();
-          var dMatch = pHtml.match(/(?:decrypt|\))\s*\(\s*["']([0-9a-fA-F]+)["']\s*,\s*(\d+)\s*\)/);
-          if (!dMatch) return null;
-          var block = vidmodyDecrypt(dMatch[1], parseInt(dMatch[2]));
+          if (!pRes2.ok) return null;
+          var pHtml2 = yield pRes2.text();
+          var dMatch2 = pHtml2.match(/(?:decrypt|\))\s*\(\s*["']([0-9a-fA-F]+)["']\s*,\s*(\d+)\s*\)/);
+          if (!dMatch2) return null;
+          var block = vidmodyDecrypt(dMatch2[1], parseInt(dMatch2[2]));
           var fMatch = block.match(/file:\s*['"](https?:\/\/[^'"]+)['"]/);
           if (!fMatch) return null;
-          var subs = [];
+          var subs2 = [];
           var subRe = /https?:\/\/[^\s"'\\]+\.vtt/gi;
           var sm;
           var seen = /* @__PURE__ */ new Set();
-          while ((sm = subRe.exec(pHtml + " " + block)) !== null) {
+          while ((sm = subRe.exec(pHtml2 + " " + block)) !== null) {
             if (seen.has(sm[0]) || /thumb/i.test(sm[0])) continue;
             seen.add(sm[0]);
             var lang = /tur/i.test(sm[0]) ? "tur" : "eng";
-            subs.push({ id: lang, lang, url: sm[0] });
+            subs2.push({ id: lang, lang, url: sm[0] });
           }
-          return { file: fMatch[1], playerUrl, subtitles: subs };
+          return { file: fMatch[1], playerUrl, subtitles: subs2 };
         } catch (e) {
           if (e && (e.name === "ProviderError" || e.name === "AbortError" || e.message === "TIMEOUT" || signal && signal.aborted)) {
             throw e;
@@ -695,9 +1016,10 @@ var require_hdfilmdelisi = __commonJS({
     function toStream(file, subtitles) {
       var isHls = /\.m3u8/i.test(file) || file.includes("vixolity.com/vs/") || file.includes("vidmody.com/vs/");
       var headers = file.includes("vixolity.com") ? VIXOLITY_HEADERS : isHls && file.includes("vidmody.com") ? { "User-Agent": HEADERS["User-Agent"], "Referer": "https://vidmody.com/" } : { "User-Agent": HEADERS["User-Agent"], "Referer": "https://player.vidmody.com/" };
+      var streamTitle = file.includes("vixolity.com") ? "\u231C HDFM \u231F | Vixolity \u2022 [TR Dublaj & Altyaz\u0131l\u0131] (1080p HLS)" : "\u231C HDFM \u231F | 1080p HLS";
       return {
         name: "HDFM",
-        title: "\u231C HDFM \u231F | 1080p HLS",
+        title: streamTitle,
         url: file,
         quality: "1080p",
         provider: "hdfilmdelisi",
@@ -782,6 +1104,8 @@ var require_hdfilmdelisi = __commonJS({
             options = tmdbIdOrArgs.options || options;
             signal = options && options.signal;
           }
+          var cleanId = String(id || "").trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, "");
+          if (cleanId.includes(":")) cleanId = cleanId.split(":")[0];
           var streams = [];
           var seenUrls = /* @__PURE__ */ new Set();
           if (typeof id === "string" && id.startsWith("hdfilmdelisi:movie:")) {
@@ -791,7 +1115,7 @@ var require_hdfilmdelisi = __commonJS({
               var fData = yield apiRes.json();
               if (fData && fData.imdbId && fData.imdbId.startsWith("tt")) {
                 var directVix = "https://ha.vixolity.com/vs/" + fData.imdbId;
-                var vr = yield fetchWithTimeout(directVix, { headers: VIXOLITY_HEADERS, signal }, 8e3);
+                var vr = yield fetchWithTimeout(directVix, { headers: VIXOLITY_HEADERS, signal }, DIRECT_PROBE_TIMEOUT_MS);
                 if (vr.ok) {
                   var vt = yield vr.text();
                   var subs = parseVixolitySubtitles(vt);
@@ -807,17 +1131,41 @@ var require_hdfilmdelisi = __commonJS({
             }
             if (streams.length > 0) return streams;
           }
-          var info = yield resolveTmdbInfo(id, isSeries ? "tv" : "movie", signal);
-          if (info && info.imdbId && info.imdbId.startsWith("tt")) {
-            var vixUrl = isSeries ? "https://ha.vixolity.com/vs/" + info.imdbId + "/s" + s + "/e" + (e < 10 ? "0" + e : e) : "https://ha.vixolity.com/vs/" + info.imdbId;
-            var vRes = yield fetchWithTimeout(vixUrl, { headers: VIXOLITY_HEADERS, signal }, 8e3);
-            if (vRes.ok) {
-              var vTxt = yield vRes.text();
-              if (vTxt.includes("#EXTM3U")) {
-                var vSubs = parseVixolitySubtitles(vTxt);
-                streams.push(toVixolityStream(vixUrl, vSubs, isSeries, s, e));
-                seenUrls.add(vixUrl);
+          var targetImdbId = cleanId.startsWith("tt") ? cleanId : null;
+          if (targetImdbId) {
+            var vixUrl = isSeries ? "https://ha.vixolity.com/vs/" + targetImdbId + "/s" + s + "/e" + (e < 10 ? "0" + e : e) : "https://ha.vixolity.com/vs/" + targetImdbId;
+            try {
+              var vRes = yield fetchWithTimeout(vixUrl, { headers: VIXOLITY_HEADERS, signal }, DIRECT_PROBE_TIMEOUT_MS);
+              if (vRes.ok) {
+                var vTxt = yield vRes.text();
+                if (vTxt.includes("#EXTM3U")) {
+                  var vSubs = parseVixolitySubtitles(vTxt);
+                  streams.push(toVixolityStream(vixUrl, vSubs, isSeries, s, e));
+                  seenUrls.add(vixUrl);
+                  return streams;
+                }
               }
+            } catch (vErr) {
+              if (signal && signal.aborted) throw vErr;
+            }
+          }
+          var info = yield resolveTmdbInfo(cleanId, isSeries ? "tv" : "movie", signal);
+          if (!targetImdbId && info && info.imdbId && info.imdbId.startsWith("tt")) {
+            targetImdbId = info.imdbId;
+            var vixUrl2 = isSeries ? "https://ha.vixolity.com/vs/" + targetImdbId + "/s" + s + "/e" + (e < 10 ? "0" + e : e) : "https://ha.vixolity.com/vs/" + targetImdbId;
+            try {
+              var vRes2 = yield fetchWithTimeout(vixUrl2, { headers: VIXOLITY_HEADERS, signal }, DIRECT_PROBE_TIMEOUT_MS);
+              if (vRes2.ok) {
+                var vTxt2 = yield vRes2.text();
+                if (vTxt2.includes("#EXTM3U")) {
+                  var vSubs2 = parseVixolitySubtitles(vTxt2);
+                  streams.push(toVixolityStream(vixUrl2, vSubs2, isSeries, s, e));
+                  seenUrls.add(vixUrl2);
+                  return streams;
+                }
+              }
+            } catch (vErr2) {
+              if (signal && signal.aborted) throw vErr2;
             }
           }
           var searchTitles = [info.title, info.origTitle].filter(Boolean);
@@ -830,14 +1178,17 @@ var require_hdfilmdelisi = __commonJS({
             if (!best || !best.slug) continue;
             if (best.imdbId && best.imdbId.startsWith("tt") && !seenUrls.has("https://ha.vixolity.com/vs/" + best.imdbId)) {
               var sUrl = "https://ha.vixolity.com/vs/" + best.imdbId;
-              var sRes = yield fetchWithTimeout(sUrl, { headers: VIXOLITY_HEADERS, signal }, 8e3);
-              if (sRes.ok) {
-                var sTxt = yield sRes.text();
-                if (sTxt.includes("#EXTM3U")) {
-                  var sSubs = parseVixolitySubtitles(sTxt);
-                  streams.push(toVixolityStream(sUrl, sSubs, false));
-                  seenUrls.add(sUrl);
+              try {
+                var sRes = yield fetchWithTimeout(sUrl, { headers: VIXOLITY_HEADERS, signal }, DIRECT_PROBE_TIMEOUT_MS);
+                if (sRes.ok) {
+                  var sTxt = yield sRes.text();
+                  if (sTxt.includes("#EXTM3U")) {
+                    var sSubs = parseVixolitySubtitles(sTxt);
+                    streams.push(toVixolityStream(sUrl, sSubs, false));
+                    seenUrls.add(sUrl);
+                  }
                 }
+              } catch (_) {
               }
             }
             var vf = yield extractVidmodyFile(BASE_URL + "/film/" + best.slug, signal);

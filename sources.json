@@ -85,6 +85,30 @@
       "enabled": true,
       "observation": "sources-found",
       "playback": "unverified"
+    },
+    {
+      "key": "belgeselx",
+      "id": "mum_belgeselx",
+      "name": "BELGX",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
+    },
+    {
+      "key": "dizibox",
+      "id": "mum_dizibox",
+      "name": "DBOX",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true,
+      "observation": "sources-found",
+      "playback": "unverified"
     }
   ]
 }

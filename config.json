@@ -18,6 +18,9 @@
       },
       "yabancidizi": {
         "base": "https://yabancidizi.news"
+      },
+      "belgeselx": {
+        "base": "https://belgeselx.com"
       }
     },
     "movies": {

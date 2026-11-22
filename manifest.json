@@ -86,6 +86,30 @@
         "tv"
       ],
       "enabled": true
+    },
+    {
+      "id": "mum_belgeselx",
+      "name": "BELGX",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_belgeselx.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mum_dizibox",
+      "name": "DBOX",
+      "version": "0.1.2",
+      "author": "Anthology contributors; MUM contributors",
+      "filename": "providers/mum_dizibox.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "enabled": true
     }
   ]
 }

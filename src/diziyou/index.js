@@ -1,6 +1,6 @@
 const { sortStreamsByQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
-const { fetchWithTimeout } = require("../shared/http.js");
+const { fetchWithTimeout, resolveTmdbMeta } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
 const { pickBestCandidate, calculateMatchScore } = require("../shared/matching.js");
 
@@ -38,55 +38,10 @@ const WORKING_HEADERS = {
 
 async function resolveTmdbInfo(id, mediaType, signal) {
   try {
-    let cleanId = String(id || '').trim();
-    if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
-
-    let numericId = null;
-    let title = '';
-    let origTitle = '';
-    let year = '';
-    let originCountries = [];
-    let origLanguage = '';
-
-    if (cleanId.startsWith('tt')) {
-      const findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
-      if (findRes.ok) {
-        const fData = await findRes.json();
-        const item = fData.tv_results && fData.tv_results[0];
-        if (item) {
-          numericId = item.id;
-          title = item.name || '';
-          origTitle = item.original_name || '';
-          if (item.first_air_date) {
-            year = String(item.first_air_date).split('-')[0];
-          }
-          if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
-          if (item.original_language) origLanguage = item.original_language;
-        }
-      }
-    } else {
-      numericId = cleanId;
-    }
-
-    if (numericId && (!title || !origTitle || !year || !origLanguage || originCountries.length === 0)) {
-      const tRes = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal: signal }, 8000);
-      if (tRes.ok) {
-        const tData = await tRes.json();
-        title = tData.name || title;
-        origTitle = tData.original_name || origTitle;
-        if (!year && tData.first_air_date) {
-          year = String(tData.first_air_date).split('-')[0];
-        }
-        if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
-          originCountries = tData.origin_country;
-        }
-        if (tData.original_language) origLanguage = tData.original_language;
-      }
-    }
-
-    return { title, origTitle, numericId, year, originCountries, origLanguage };
+    const meta = await resolveTmdbMeta(id, mediaType || 'tv', { signal: signal, apiKey: TMDB_API_KEY });
+    return meta || { title: '', origTitle: '', numericId: id, year: '', originCountries: [], origLanguage: '' };
   } catch (e) {
-    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) throw e;
     return { title: '', origTitle: '', numericId: id, year: '', originCountries: [], origLanguage: '' };
   }
 }

@@ -148,6 +148,9 @@ var require_config = __commonJS({
           },
           yabancidizi: {
             base: "https://yabancidizi.news"
+          },
+          belgeselx: {
+            base: "https://belgeselx.com"
           }
         },
         movies: {
@@ -255,11 +258,284 @@ var require_http = __commonJS({
       }
       return fetch(url, options);
     }
+    var MAX_CACHE_SIZE = 500;
+    var DEFAULT_TTL_MS = 36e5;
+    function createTmdbCache() {
+      var store = /* @__PURE__ */ new Map();
+      var cacheObj = {
+        get: function(key) {
+          if (!store.has(key)) return void 0;
+          var entry = store.get(key);
+          if (Date.now() > entry.expiresAt) {
+            store.delete(key);
+            return void 0;
+          }
+          store.delete(key);
+          store.set(key, entry);
+          return entry.value;
+        },
+        set: function(key, value, ttlMs) {
+          if (store.size >= MAX_CACHE_SIZE && !store.has(key)) {
+            var firstKey = store.keys().next().value;
+            if (firstKey !== void 0) store.delete(firstKey);
+          }
+          var expiresAt = Date.now() + (typeof ttlMs === "number" && ttlMs > 0 ? ttlMs : DEFAULT_TTL_MS);
+          if (store.has(key)) store.delete(key);
+          store.set(key, { value, expiresAt });
+          return this;
+        },
+        has: function(key) {
+          if (!store.has(key)) return false;
+          var entry = store.get(key);
+          if (Date.now() > entry.expiresAt) {
+            store.delete(key);
+            return false;
+          }
+          return true;
+        },
+        delete: function(key) {
+          return store.delete(key);
+        },
+        clear: function() {
+          store.clear();
+        },
+        get size() {
+          return store.size;
+        }
+      };
+      if (typeof Proxy !== "undefined") {
+        return new Proxy(cacheObj, {
+          get: function(target, prop) {
+            if (typeof prop === "string" && prop in target) {
+              var member = target[prop];
+              if (typeof member === "function") return member.bind(target);
+              return member;
+            }
+            if (typeof prop === "symbol") return target[prop];
+            return target.get(prop);
+          },
+          set: function(target, prop, value) {
+            if (typeof prop === "symbol" || prop in target) {
+              target[prop] = value;
+              return true;
+            }
+            target.set(prop, value);
+            return true;
+          }
+        });
+      }
+      return cacheObj;
+    }
+    var _g = typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof window !== "undefined" ? window : exports2;
+    if (!_g.__MUM_TMDB_CACHE__) {
+      _g.__MUM_TMDB_CACHE__ = createTmdbCache();
+    }
+    var tmdb_cache = _g.__MUM_TMDB_CACHE__;
+    if (!_g.__MUM_TMDB_IN_FLIGHT__) {
+      _g.__MUM_TMDB_IN_FLIGHT__ = /* @__PURE__ */ new Map();
+    }
+    var in_flight_tmdb = _g.__MUM_TMDB_IN_FLIGHT__;
+    function makeTmdbCacheKey(mediaType, cleanId, language) {
+      var type = mediaType === "tv" || mediaType === "series" ? "tv" : "movie";
+      var id = String(cleanId || "").trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, "");
+      if (id.includes(":")) id = id.split(":")[0];
+      var lang = String(language || "tr-TR").trim().toLowerCase();
+      return type + ":" + id + ":" + lang;
+    }
+    function getCachedTmdb(mediaType, cleanId, language) {
+      var key = makeTmdbCacheKey(mediaType, cleanId, language);
+      return tmdb_cache.get(key);
+    }
+    function setCachedTmdb(mediaType, cleanId, data, language, ttlMs) {
+      var key = makeTmdbCacheKey(mediaType, cleanId, language);
+      tmdb_cache.set(key, data, ttlMs);
+    }
+    function resolveTmdbMeta(id, mediaType, options) {
+      return __async(this, null, function* () {
+        options = options || {};
+        var rawId = typeof id === "object" && id && id.id ? id.id : id;
+        if (typeof id === "object" && id) {
+          if (!mediaType && id.type) mediaType = id.type;
+          if (!options.signal && id.signal) options.signal = id.signal;
+        }
+        var cleanId = String(rawId || "").trim().replace(/^(?:movie|tv|series|tmdb|imdb):+/i, "");
+        if (cleanId.includes(":")) cleanId = cleanId.split(":")[0];
+        if (!cleanId) return null;
+        var isTv = mediaType === "tv" || mediaType === "series";
+        var type = isTv ? "tv" : "movie";
+        var isImdb = cleanId.startsWith("tt");
+        var lang = (options.language || "tr-TR").trim().toLowerCase();
+        var apiKey = options.apiKey || "500330721680edb6d5f7f12ba7cd9023";
+        var timeoutMs = options.timeoutMs || 8e3;
+        var callerSignal = options.signal;
+        if (callerSignal && callerSignal.aborted) {
+          var errAbort = new Error("The operation was aborted");
+          errAbort.name = "AbortError";
+          throw errAbort;
+        }
+        var cacheKey = makeTmdbCacheKey(type, cleanId, lang);
+        var cached = tmdb_cache.get(cacheKey);
+        if (cached) {
+          return cached;
+        }
+        var inFlightEntry = in_flight_tmdb.get(cacheKey);
+        var subscriberToken = { signal: callerSignal };
+        if (!inFlightEntry) {
+          var abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+          var subscribers = /* @__PURE__ */ new Set();
+          subscribers.add(subscriberToken);
+          var sharedPromise = (function() {
+            return __async(this, null, function* () {
+              try {
+                var title = "";
+                var origTitle = "";
+                var year = "";
+                var imdbId = isImdb ? cleanId : "";
+                var numericId = isImdb ? null : parseInt(cleanId, 10) || null;
+                var originCountries = [];
+                var origLanguage = "";
+                var fetchSignal = abortController ? abortController.signal : null;
+                if (isImdb) {
+                  var findRes = yield fetchWithTimeout(
+                    "https://api.themoviedb.org/3/find/" + cleanId + "?api_key=" + apiKey + "&external_source=imdb_id&language=" + lang,
+                    { signal: fetchSignal },
+                    timeoutMs
+                  );
+                  if (findRes.ok) {
+                    var fData = yield findRes.json();
+                    var match = isTv ? fData.tv_results && fData.tv_results[0] : fData.movie_results && fData.movie_results[0];
+                    if (!match) match = fData.movie_results && fData.movie_results[0] || fData.tv_results && fData.tv_results[0] || (fData.title || fData.name) && fData;
+                    if (match) {
+                      numericId = match.id || null;
+                      title = match.name || match.title || "";
+                      origTitle = match.original_name || match.original_title || "";
+                      var dStr = match.first_air_date || match.release_date || "";
+                      if (dStr) year = dStr.slice(0, 4);
+                      if (Array.isArray(match.origin_country)) originCountries = match.origin_country;
+                      if (match.original_language) origLanguage = match.original_language;
+                    }
+                  }
+                }
+                var needsDetails = !title || !origTitle || isTv && originCountries.length === 0;
+                if (numericId && needsDetails) {
+                  var detailsRes = yield fetchWithTimeout(
+                    "https://api.themoviedb.org/3/" + type + "/" + numericId + "?api_key=" + apiKey + "&language=" + lang + "&append_to_response=external_ids",
+                    { signal: fetchSignal },
+                    timeoutMs
+                  );
+                  if (detailsRes.ok) {
+                    var dData = yield detailsRes.json();
+                    title = dData.name || dData.title || title;
+                    origTitle = dData.original_name || dData.original_title || origTitle;
+                    var dStr2 = dData.first_air_date || dData.release_date || "";
+                    if (dStr2 && !year) year = dStr2.slice(0, 4);
+                    if (Array.isArray(dData.origin_country) && dData.origin_country.length > 0) {
+                      originCountries = dData.origin_country;
+                    } else if (Array.isArray(dData.production_countries) && dData.production_countries.length > 0) {
+                      originCountries = dData.production_countries.map(function(p) {
+                        return p.iso_3166_1;
+                      }).filter(Boolean);
+                    }
+                    if (dData.original_language) origLanguage = dData.original_language;
+                    if (!imdbId && dData.external_ids && dData.external_ids.imdb_id) {
+                      imdbId = dData.external_ids.imdb_id;
+                    } else if (!imdbId && dData.imdb_id) {
+                      imdbId = dData.imdb_id;
+                    }
+                  }
+                }
+                var result = {
+                  title,
+                  origTitle,
+                  titleTr: title,
+                  titleEn: origTitle,
+                  year,
+                  imdbId: imdbId || (isImdb ? cleanId : ""),
+                  numericId,
+                  originCountries,
+                  origLanguage
+                };
+                var isValidMeta = Boolean(result.title || result.origTitle);
+                if (isValidMeta) {
+                  tmdb_cache.set(cacheKey, result);
+                  if (numericId) {
+                    var numKey = makeTmdbCacheKey(type, numericId, lang);
+                    if (numKey !== cacheKey) tmdb_cache.set(numKey, result);
+                  }
+                  if (imdbId) {
+                    var imdbKey = makeTmdbCacheKey(type, imdbId, lang);
+                    if (imdbKey !== cacheKey) tmdb_cache.set(imdbKey, result);
+                  }
+                }
+                return result;
+              } finally {
+                in_flight_tmdb.delete(cacheKey);
+              }
+            });
+          })();
+          inFlightEntry = {
+            promise: sharedPromise,
+            subscribers,
+            abortController
+          };
+          in_flight_tmdb.set(cacheKey, inFlightEntry);
+        } else {
+          inFlightEntry.subscribers.add(subscriberToken);
+        }
+        if (!callerSignal) {
+          return inFlightEntry.promise.finally(function() {
+            inFlightEntry.subscribers.delete(subscriberToken);
+          });
+        }
+        return new Promise(function(resolve, reject) {
+          var onAbort = function() {
+            inFlightEntry.subscribers.delete(subscriberToken);
+            if (inFlightEntry.subscribers.size === 0 && inFlightEntry.abortController) {
+              try {
+                inFlightEntry.abortController.abort(callerSignal.reason || new Error("The operation was aborted"));
+              } catch (_) {
+              }
+            }
+            var err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (callerSignal.aborted) {
+            return onAbort();
+          }
+          callerSignal.addEventListener("abort", onAbort, { once: true });
+          inFlightEntry.promise.then(
+            function(val) {
+              try {
+                callerSignal.removeEventListener("abort", onAbort);
+              } catch (_) {
+              }
+              inFlightEntry.subscribers.delete(subscriberToken);
+              resolve(val);
+            },
+            function(err) {
+              try {
+                callerSignal.removeEventListener("abort", onAbort);
+              } catch (_) {
+              }
+              inFlightEntry.subscribers.delete(subscriberToken);
+              reject(err);
+            }
+          );
+        });
+      });
+    }
     module2.exports = {
       DEFAULT_UA,
       timeoutSignal,
       combineSignals,
-      fetchWithTimeout
+      fetchWithTimeout,
+      tmdb_cache,
+      in_flight_tmdb,
+      makeTmdbCacheKey,
+      getCachedTmdb,
+      setCachedTmdb,
+      resolveTmdbMeta
     };
   }
 });
@@ -477,7 +753,7 @@ var require_diziyou = __commonJS({
   "src/diziyou/index.js"(exports2, module2) {
     var { sortStreamsByQuality } = require_quality();
     var { loadConfig, val, wrapAll } = require_config2();
-    var { fetchWithTimeout } = require_http();
+    var { fetchWithTimeout, resolveTmdbMeta } = require_http();
     var { ProviderError } = require_errors();
     var { pickBestCandidate, calculateMatchScore } = require_matching();
     var _cfgReady = null;
@@ -506,51 +782,10 @@ var require_diziyou = __commonJS({
     function resolveTmdbInfo(id, mediaType, signal) {
       return __async(this, null, function* () {
         try {
-          let cleanId = String(id || "").trim();
-          if (cleanId.includes(":")) cleanId = cleanId.split(":")[0];
-          let numericId = null;
-          let title = "";
-          let origTitle = "";
-          let year = "";
-          let originCountries = [];
-          let origLanguage = "";
-          if (cleanId.startsWith("tt")) {
-            const findRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal }, 8e3);
-            if (findRes.ok) {
-              const fData = yield findRes.json();
-              const item = fData.tv_results && fData.tv_results[0];
-              if (item) {
-                numericId = item.id;
-                title = item.name || "";
-                origTitle = item.original_name || "";
-                if (item.first_air_date) {
-                  year = String(item.first_air_date).split("-")[0];
-                }
-                if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
-                if (item.original_language) origLanguage = item.original_language;
-              }
-            }
-          } else {
-            numericId = cleanId;
-          }
-          if (numericId && (!title || !origTitle || !year || !origLanguage || originCountries.length === 0)) {
-            const tRes = yield fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal }, 8e3);
-            if (tRes.ok) {
-              const tData = yield tRes.json();
-              title = tData.name || title;
-              origTitle = tData.original_name || origTitle;
-              if (!year && tData.first_air_date) {
-                year = String(tData.first_air_date).split("-")[0];
-              }
-              if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
-                originCountries = tData.origin_country;
-              }
-              if (tData.original_language) origLanguage = tData.original_language;
-            }
-          }
-          return { title, origTitle, numericId, year, originCountries, origLanguage };
+          const meta = yield resolveTmdbMeta(id, mediaType || "tv", { signal, apiKey: TMDB_API_KEY });
+          return meta || { title: "", origTitle: "", numericId: id, year: "", originCountries: [], origLanguage: "" };
         } catch (e) {
-          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError")) throw e;
+          if (e && (e.name === "AbortError" || e.message === "TIMEOUT" || e.name === "ProviderError" || signal && signal.aborted)) throw e;
           return { title: "", origTitle: "", numericId: id, year: "", originCountries: [], origLanguage: "" };
         }
       });

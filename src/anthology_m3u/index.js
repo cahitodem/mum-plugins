@@ -6,7 +6,7 @@
 
 const { sortStreamsByQuality } = require('../shared/quality');
 const { loadConfig, val, wrapAll } = require('../shared/config');
-const { timeoutSignal, fetchWithTimeout } = require('../shared/http');
+const { timeoutSignal, fetchWithTimeout, resolveTmdbMeta } = require('../shared/http');
 
 var _cfgReady = null;
 function cfgReady() {
@@ -139,22 +139,17 @@ const EP_REGEX = /(?:s\d+[\s._-]*e0*(\d+)|(?:b[oö]l[uü]m|episode|ep)[\s._-]*0*
 const S_REGEX = /(?:s0*(\d+)[\s._-]*e|\b0*(\d+)x\d+\b)/i;
 
 async function resolveTmdbMovie(rawId, signal) {
-    let cleanId = String(rawId).replace(/^tmdb:/, '').split(':')[0].trim();
-    const isImdb = cleanId.startsWith('tt');
     try {
-        let movieId = cleanId;
-        if (isImdb) {
-            const res = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
-            const data = await res.json();
-            const found = data.movie_results && data.movie_results[0] ? data.movie_results[0] : null;
-            if (!found || !found.id) return null;
-            movieId = String(found.id);
-        }
-        const res = await fetchWithTimeout(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: signal }, 8000);
-        const data = await res.json();
-        if (!data || (!data.title && !data.original_title)) return null;
-        if (isImdb && !data.imdb_id) data.imdb_id = cleanId;
-        return data;
+        const meta = await resolveTmdbMeta(rawId, 'movie', { signal: signal, apiKey: TMDB_API_KEY });
+        if (!meta) return null;
+        return {
+            id: meta.numericId,
+            title: meta.title,
+            original_title: meta.origTitle,
+            release_date: meta.year ? (meta.year + '-01-01') : '',
+            imdb_id: meta.imdbId,
+            external_ids: { imdb_id: meta.imdbId }
+        };
     } catch (e) {
         if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
             throw e;
@@ -164,23 +159,17 @@ async function resolveTmdbMovie(rawId, signal) {
 }
 
 async function resolveTmdbShow(rawId, signal) {
-    let cleanId = String(rawId).replace(/^tmdb:/, '').split(':')[0].trim();
-    const isImdb = cleanId.startsWith('tt');
     try {
-        let showId = cleanId;
-        if (isImdb) {
-            const res = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
-            const data = await res.json();
-            const found = data.tv_results && data.tv_results[0] ? data.tv_results[0] : null;
-            if (!found || !found.id) return null;
-            showId = String(found.id);
-        }
-        const res = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${showId}?api_key=${TMDB_API_KEY}&language=tr-TR&append_to_response=external_ids`, { signal: signal }, 8000);
-        const data = await res.json();
-        if (!data || (!data.name && !data.original_name)) return null;
-        if (isImdb && !data.imdb_id) data.imdb_id = cleanId;
-        if (data.external_ids && data.external_ids.imdb_id && !data.imdb_id) data.imdb_id = data.external_ids.imdb_id;
-        return data;
+        const meta = await resolveTmdbMeta(rawId, 'tv', { signal: signal, apiKey: TMDB_API_KEY });
+        if (!meta) return null;
+        return {
+            id: meta.numericId,
+            name: meta.title,
+            original_name: meta.origTitle,
+            first_air_date: meta.year ? (meta.year + '-01-01') : '',
+            imdb_id: meta.imdbId,
+            external_ids: { imdb_id: meta.imdbId }
+        };
     } catch (e) {
         if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
             throw e;

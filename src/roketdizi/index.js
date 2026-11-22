@@ -16,7 +16,7 @@ function getCryptoJS() {
 const cheerio = require('cheerio-without-node-native');
 const { sortStreamsByQuality, filterHighestQuality } = require('../shared/quality.js');
 const { loadConfig, val, wrapAll } = require('../shared/config.js');
-const { fetchWithTimeout } = require('../shared/http.js');
+const { fetchWithTimeout, resolveTmdbMeta } = require('../shared/http.js');
 const { ProviderError } = require('../shared/errors.js');
 const { pickBestCandidate } = require('../shared/matching.js');
 
@@ -53,98 +53,33 @@ var WORKING_HEADERS = {
 // ── TMDB Metadata Çözümleme ──────────────────────────────────────────
 async function resolveTmdbInfo(id, mediaType, signal) {
   try {
-    var cleanId = String(id || '').trim();
-    if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
-
-    var numericId = null;
-    var titleTr = '';
-    var titleEn = '';
-    var origTitle = '';
-    var year = '';
-    var originCountries = [];
-    var origLanguage = '';
-    var imdbId = cleanId.startsWith('tt') ? cleanId : null;
-
-    if (cleanId.startsWith('tt')) {
-      var findRes = await fetchWithTimeout(
-        'https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id',
-        { signal: signal },
-        8000
-      );
-      if (findRes.ok) {
-        var fData = await findRes.json();
-        var item = (mediaType === 'movie')
-          ? (fData.movie_results && fData.movie_results[0])
-          : ((fData.tv_results && fData.tv_results[0]) || (fData.movie_results && fData.movie_results[0]));
-        if (item) {
-          numericId = item.id;
-          titleEn = item.title || item.name || '';
-          origTitle = item.original_title || item.original_name || '';
-          var date = item.release_date || item.first_air_date || '';
-          if (date) year = String(date).split('-')[0];
-          if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
-          if (item.original_language) origLanguage = item.original_language;
-        }
-      }
-    } else {
-      numericId = cleanId;
+    var meta = await resolveTmdbMeta(id, mediaType, { signal: signal, apiKey: TMDB_API_KEY });
+    if (meta) {
+      return {
+        title: meta.titleTr || meta.titleEn || meta.title || meta.origTitle || '',
+        titleTr: meta.titleTr || meta.title || '',
+        titleEn: meta.titleEn || meta.origTitle || '',
+        origTitle: meta.origTitle || meta.titleEn || '',
+        numericId: meta.numericId,
+        year: meta.year || '',
+        originCountries: meta.originCountries || [],
+        origLanguage: meta.origLanguage || '',
+        imdbId: meta.imdbId || null
+      };
     }
-
-    if (numericId) {
-      var endpoint = (mediaType === 'movie') ? 'movie' : 'tv';
-      // 1. Türkçe başlık çekme
-      var tRes = await fetchWithTimeout(
-        'https://api.themoviedb.org/3/' + endpoint + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR',
-        { signal: signal },
-        8000
-      );
-      if (tRes.ok) {
-        var tData = await tRes.json();
-        titleTr = tData.title || tData.name || '';
-        origTitle = tData.original_title || tData.original_name || origTitle;
-        var tDate = tData.release_date || tData.first_air_date || '';
-        if (!year && tDate) year = String(tDate).split('-')[0];
-        if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
-          originCountries = tData.origin_country;
-        } else if (Array.isArray(tData.production_countries) && tData.production_countries.length > 0) {
-          originCountries = tData.production_countries.map(function(p) { return p.iso_3166_1; }).filter(Boolean);
-        }
-        if (tData.original_language) origLanguage = tData.original_language;
-        if (tData.external_ids && tData.external_ids.imdb_id) imdbId = tData.external_ids.imdb_id;
-        else if (tData.imdb_id) imdbId = tData.imdb_id;
-      }
-
-      // 2. İngilizce / Uluslararası başlık çekme
-      var enRes = await fetchWithTimeout(
-        'https://api.themoviedb.org/3/' + endpoint + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=en-US',
-        { signal: signal },
-        8000
-      );
-      if (enRes.ok) {
-        var enData = await enRes.json();
-        titleEn = enData.title || enData.name || titleEn;
-        if (!origTitle) origTitle = enData.original_title || enData.original_name || '';
-        var enDate = enData.release_date || enData.first_air_date || '';
-        if (!year && enDate) year = String(enDate).split('-')[0];
-        if (!origLanguage && enData.original_language) origLanguage = enData.original_language;
-        if (!imdbId && enData.external_ids && enData.external_ids.imdb_id) imdbId = enData.external_ids.imdb_id;
-      }
-    }
-
-    var title = titleTr || titleEn || origTitle;
     return {
-      title: title,
-      titleTr: titleTr,
-      titleEn: titleEn,
-      origTitle: origTitle,
-      numericId: numericId,
-      year: year,
-      originCountries: originCountries,
-      origLanguage: origLanguage,
-      imdbId: imdbId
+      title: '',
+      titleTr: '',
+      titleEn: '',
+      origTitle: '',
+      numericId: id,
+      year: '',
+      originCountries: [],
+      origLanguage: '',
+      imdbId: (typeof id === 'string' && id.startsWith('tt')) ? id.split(':')[0] : null
     };
   } catch (e) {
-    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) throw e;
     return {
       title: '',
       titleTr: '',

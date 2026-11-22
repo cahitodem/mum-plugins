@@ -1,6 +1,6 @@
 const { sortStreamsByQuality, getQualityScore, filterHighestQuality, getResolutionScore } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
-const { fetchWithTimeout } = require("../shared/http.js");
+const { fetchWithTimeout, resolveTmdbMeta } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
 const { pickBestCandidate } = require("../shared/matching.js");
 
@@ -52,65 +52,8 @@ function ultraClean(str) {
 
 async function resolveTmdbInfo(id, mediaType, signal) {
     try {
-        var cleanId = String(id || '').trim();
-        if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
-
-        var numericId = null;
-        var title = '';
-        var origTitle = '';
-        var year = '';
-        var originCountries = [];
-        var origLanguage = '';
-
-        if (cleanId.startsWith('tt')) {
-            var findRes = await safeFetch('https://api.themoviedb.org/3/find/' + cleanId + '?api_key=' + TMDB_API_KEY + '&external_source=imdb_id&language=tr-TR', { signal });
-            if (findRes.ok) {
-                var fData = await findRes.json();
-                var isTv = (mediaType === 'tv' || mediaType === 'series');
-                var item = isTv
-                    ? (fData.tv_results && fData.tv_results[0])
-                    : (fData.movie_results && fData.movie_results[0]);
-                if (item) {
-                    numericId = item.id;
-                    title = item.name || item.title || '';
-                    origTitle = item.original_name || item.original_title || '';
-                    var dateStr = item.first_air_date || item.release_date || '';
-                    if (dateStr) year = dateStr.slice(0, 4);
-                    if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
-                    if (item.original_language) origLanguage = item.original_language;
-                }
-            }
-        } else {
-            numericId = cleanId;
-        }
-
-        if (numericId && (!title || !origTitle || !year || !origLanguage || originCountries.length === 0)) {
-            var isTvType = (mediaType === 'tv' || mediaType === 'series');
-            var type = isTvType ? 'tv' : 'movie';
-            var tRes = await safeFetch('https://api.themoviedb.org/3/' + type + '/' + numericId + '?api_key=' + TMDB_API_KEY + '&language=tr-TR', { signal });
-            if (tRes.ok) {
-                var tData = await tRes.json();
-                title = tData.name || tData.title || title;
-                origTitle = tData.original_name || tData.original_title || origTitle;
-                var dateStr2 = tData.first_air_date || tData.release_date || '';
-                if (dateStr2) year = dateStr2.slice(0, 4);
-                if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
-                    originCountries = tData.origin_country;
-                } else if (Array.isArray(tData.production_countries) && tData.production_countries.length > 0) {
-                    originCountries = tData.production_countries.map(function(p) { return p.iso_3166_1; }).filter(Boolean);
-                }
-                if (tData.original_language) origLanguage = tData.original_language;
-            }
-        }
-
-        return {
-            title: title,
-            origTitle: origTitle,
-            numericId: numericId,
-            year: year,
-            originCountries: originCountries,
-            origLanguage: origLanguage
-        };
+        var meta = await resolveTmdbMeta(id, mediaType, { signal: signal, apiKey: TMDB_API_KEY });
+        return meta || { title: '', origTitle: '', numericId: id, year: '', originCountries: [], origLanguage: '' };
     } catch (e) {
         if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) {
             throw e;

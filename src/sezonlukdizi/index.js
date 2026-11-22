@@ -1,7 +1,7 @@
 // MUM modification 2026-11-21. GPL-3.0-only; see LICENSE and NOTICE.md.
 const { sortStreamsByQuality, filterHighestQuality } = require("../shared/quality.js");
 const { loadConfig, val, wrapAll } = require("../shared/config.js");
-const { fetchWithTimeout } = require("../shared/http.js");
+const { fetchWithTimeout, resolveTmdbMeta } = require("../shared/http.js");
 const { ProviderError } = require("../shared/errors.js");
 var cheerio = require('cheerio-without-node-native');
 
@@ -43,54 +43,10 @@ function normalizeTitle(value) {
 
 async function resolveTmdbInfo(id, mediaType, signal) {
   try {
-    var cleanId = String(id || '').trim();
-    if (cleanId.includes(':')) cleanId = cleanId.split(':')[0];
-
-    var numericId = null;
-    var title = '';
-    var origTitle = '';
-    var originCountries = [];
-    var origLanguage = '';
-
-    if (cleanId.startsWith('tt')) {
-      var findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${cleanId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`, { signal: signal }, 8000);
-      if (findRes.ok) {
-        var fData = await findRes.json();
-        var item = fData.tv_results && fData.tv_results[0];
-        if (item) {
-          numericId = item.id;
-          title = item.name || '';
-          origTitle = item.original_name || '';
-          if (Array.isArray(item.origin_country)) originCountries = item.origin_country;
-          if (item.original_language) origLanguage = item.original_language;
-        }
-      }
-    } else {
-      numericId = cleanId;
-    }
-
-    if (numericId && (!title || !origTitle || !origLanguage || originCountries.length === 0)) {
-      var tRes = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${numericId}?api_key=${TMDB_API_KEY}&language=tr-TR`, { signal: signal }, 8000);
-      if (tRes.ok) {
-        var tData = await tRes.json();
-        title = tData.name || title;
-        origTitle = tData.original_name || origTitle;
-        if (Array.isArray(tData.origin_country) && tData.origin_country.length > 0) {
-          originCountries = tData.origin_country;
-        }
-        if (tData.original_language) origLanguage = tData.original_language;
-      }
-    }
-
-    return {
-      title: title,
-      origTitle: origTitle,
-      numericId: numericId,
-      originCountries: originCountries,
-      origLanguage: origLanguage
-    };
+    var meta = await resolveTmdbMeta(id, mediaType || 'tv', { signal: signal, apiKey: TMDB_API_KEY });
+    return meta || { title: '', origTitle: '', numericId: id, originCountries: [], origLanguage: '' };
   } catch (e) {
-    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError')) throw e;
+    if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || e.name === 'ProviderError' || (signal && signal.aborted))) throw e;
     return { title: '', origTitle: '', numericId: id, originCountries: [], origLanguage: '' };
   }
 }

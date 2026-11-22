@@ -185,7 +185,7 @@ async function resolveFastplay(fastplayUrl, fastplayRef) {
     try {
         var fpRes = await fetchWithTimeout(fastplayUrl, {
             headers: { 'User-Agent': HEADERS['User-Agent'], 'Referer': fastplayRef || (BASE_URL + '/') }
-        }, 15000);
+        }, 8000);
         if (!fpRes.ok) return null;
         var fpHtml = await fpRes.text();
 
@@ -249,7 +249,21 @@ async function resolveFastplay(fastplayUrl, fastplayRef) {
             }
         }
 
-        return { manifestUrl: manifestUrl, sp: sp, spT: spT, subtitles: subs, referer: fpRes.url || fastplayUrl };
+        var audioTracks = [];
+        try {
+            var mRes = await fetchWithTimeout(manifestUrl, {
+                headers: { 'User-Agent': 'ExoPlayerLib/2.19.1', 'Referer': 'https://fastplay.mom/' }
+            }, 3000);
+            if (mRes.ok) {
+                var mText = await mRes.text();
+                var hasTr = /LANGUAGE="tur"/i.test(mText) || /NAME="[^"]*türkçe[^"]*"/i.test(mText);
+                var hasEn = /LANGUAGE="eng"/i.test(mText) || /NAME="[^"]*ingilizce[^"]*"/i.test(mText);
+                if (hasTr) audioTracks.push('tr');
+                if (hasEn) audioTracks.push('en');
+            }
+        } catch (_) {}
+
+        return { manifestUrl: manifestUrl, sp: sp, spT: spT, subtitles: subs, audioTracks: audioTracks, referer: fpRes.url || fastplayUrl };
     } catch (e) {
         return null;
     }
@@ -338,7 +352,7 @@ async function extractStreamsFromContentPage(pageUrl) {
                         'Content-Type': 'application/x-www-form-urlencoded'
                     },
                     body: form.toString()
-                }, 15000);
+                }, 8000);
                 if (!aRes.ok) continue;
                 var aj = await aRes.json();
                 if (!aj || aj.success === false) continue;
@@ -348,10 +362,40 @@ async function extractStreamsFromContentPage(pageUrl) {
                 if (seenUrls.has(setplayUrl)) { gotStreamForPlayer = true; continue; }
                 seenUrls.add(setplayUrl);
 
+                // Alternatif doğrudan VidMoly kontrolü
+                if (setplayUrl.indexOf('vidmoly') !== -1) {
+                    try {
+                        var vmRes = await fetchWithTimeout(setplayUrl, {
+                            headers: { 'User-Agent': HEADERS['User-Agent'], 'Referer': BASE_URL + '/' }
+                        }, 8000);
+                        if (vmRes.ok) {
+                            var vmHtml = await vmRes.text();
+                            var vmM3u8 = vmHtml.match(/file\s*:\s*['"](https?:\/\/[^'"<>]+\.m3u8[^'"<>]*)['"]/i);
+                            if (vmM3u8) {
+                                var vmHeaders = { 'User-Agent': HEADERS['User-Agent'], 'Referer': 'https://vidmoly.biz/' };
+                                streams.push({
+                                    name: 'SetFilmIzle',
+                                    title: '⌜ SetFilmIzle ⌟ | VidMoly [1080p ⚡ Hızlı]',
+                                    url: vmM3u8[1],
+                                    quality: '1080p',
+                                    provider: 'setfilmizle',
+                                    headers: vmHeaders,
+                                    type: 'hls',
+                                    format: 'hls',
+                                    isHls: true,
+                                    behaviorHints: { notWebReady: true, proxyHeaders: { request: vmHeaders } }
+                                });
+                                gotStreamForPlayer = true;
+                                continue;
+                            }
+                        }
+                    } catch (_) {}
+                }
+
                 // setplay -> SPG.cerceve -> fastplay
                 var spRes = await fetchWithTimeout(setplayUrl, {
                     headers: { 'User-Agent': HEADERS['User-Agent'], 'Referer': pageUrl }
-                }, 15000);
+                }, 8000);
                 if (!spRes.ok) continue;
                 var spHtml = await spRes.text();
                 var cerMatch = spHtml.match(/SPG\.cerceve\(\s*"[^"]*"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/) ||
@@ -374,9 +418,21 @@ async function extractStreamsFromContentPage(pageUrl) {
                     'User-Agent': 'ExoPlayerLib/2.19.1',
                     'Referer': 'https://fastplay.mom/'
                 };
+
+                var audioLabel = '1080p HLS';
+                if (fp.audioTracks && fp.audioTracks.length > 0) {
+                    if (fp.audioTracks.indexOf('tr') !== -1 && fp.audioTracks.indexOf('en') !== -1) {
+                        audioLabel = '1080p 🇹🇷 Dublaj + 🌐 Dual';
+                    } else if (fp.audioTracks.indexOf('tr') !== -1) {
+                        audioLabel = '1080p 🇹🇷 Türkçe Dublaj';
+                    } else if (fp.audioTracks.indexOf('en') !== -1) {
+                        audioLabel = '1080p 🌐 Orijinal / Altyazılı';
+                    }
+                }
+
                 streams.push({
                     name: 'SetFilmIzle',
-                    title: '⌜ SetFilmIzle ⌟ | FastPlay (1080p HLS)',
+                    title: '⌜ SetFilmIzle ⌟ | FastPlay [' + audioLabel + ']',
                     url: fp.manifestUrl + '#.m3u8',
                     quality: '1080p',
                     provider: 'setfilmizle',

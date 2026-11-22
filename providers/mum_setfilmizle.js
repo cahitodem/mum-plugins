@@ -568,7 +568,7 @@ var require_setfilmizle = __commonJS({
         try {
           var fpRes = yield fetchWithTimeout(fastplayUrl, {
             headers: { "User-Agent": HEADERS["User-Agent"], "Referer": fastplayRef || BASE_URL + "/" }
-          }, 15e3);
+          }, 8e3);
           if (!fpRes.ok) return null;
           var fpHtml = yield fpRes.text();
           var spMatch = fpHtml.match(/"sp"\s*:\s*"([^"]+)"/);
@@ -629,7 +629,21 @@ var require_setfilmizle = __commonJS({
               });
             }
           }
-          return { manifestUrl, sp, spT, subtitles: subs, referer: fpRes.url || fastplayUrl };
+          var audioTracks = [];
+          try {
+            var mRes = yield fetchWithTimeout(manifestUrl, {
+              headers: { "User-Agent": "ExoPlayerLib/2.19.1", "Referer": "https://fastplay.mom/" }
+            }, 3e3);
+            if (mRes.ok) {
+              var mText = yield mRes.text();
+              var hasTr = /LANGUAGE="tur"/i.test(mText) || /NAME="[^"]*türkçe[^"]*"/i.test(mText);
+              var hasEn = /LANGUAGE="eng"/i.test(mText) || /NAME="[^"]*ingilizce[^"]*"/i.test(mText);
+              if (hasTr) audioTracks.push("tr");
+              if (hasEn) audioTracks.push("en");
+            }
+          } catch (_) {
+          }
+          return { manifestUrl, sp, spT, subtitles: subs, audioTracks, referer: fpRes.url || fastplayUrl };
         } catch (e) {
           return null;
         }
@@ -718,7 +732,7 @@ var require_setfilmizle = __commonJS({
                     "Content-Type": "application/x-www-form-urlencoded"
                   },
                   body: form.toString()
-                }, 15e3);
+                }, 8e3);
                 if (!aRes.ok) continue;
                 var aj = yield aRes.json();
                 if (!aj || aj.success === false) continue;
@@ -730,9 +744,38 @@ var require_setfilmizle = __commonJS({
                   continue;
                 }
                 seenUrls.add(setplayUrl);
+                if (setplayUrl.indexOf("vidmoly") !== -1) {
+                  try {
+                    var vmRes = yield fetchWithTimeout(setplayUrl, {
+                      headers: { "User-Agent": HEADERS["User-Agent"], "Referer": BASE_URL + "/" }
+                    }, 8e3);
+                    if (vmRes.ok) {
+                      var vmHtml = yield vmRes.text();
+                      var vmM3u8 = vmHtml.match(/file\s*:\s*['"](https?:\/\/[^'"<>]+\.m3u8[^'"<>]*)['"]/i);
+                      if (vmM3u8) {
+                        var vmHeaders = { "User-Agent": HEADERS["User-Agent"], "Referer": "https://vidmoly.biz/" };
+                        streams.push({
+                          name: "SetFilmIzle",
+                          title: "\u231C SetFilmIzle \u231F | VidMoly [1080p \u26A1 H\u0131zl\u0131]",
+                          url: vmM3u8[1],
+                          quality: "1080p",
+                          provider: "setfilmizle",
+                          headers: vmHeaders,
+                          type: "hls",
+                          format: "hls",
+                          isHls: true,
+                          behaviorHints: { notWebReady: true, proxyHeaders: { request: vmHeaders } }
+                        });
+                        gotStreamForPlayer = true;
+                        continue;
+                      }
+                    }
+                  } catch (_) {
+                  }
+                }
                 var spRes = yield fetchWithTimeout(setplayUrl, {
                   headers: { "User-Agent": HEADERS["User-Agent"], "Referer": pageUrl }
-                }, 15e3);
+                }, 8e3);
                 if (!spRes.ok) continue;
                 var spHtml = yield spRes.text();
                 var cerMatch = spHtml.match(/SPG\.cerceve\(\s*"[^"]*"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/) || spHtml.match(/SPG\.cerceve\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/);
@@ -751,9 +794,19 @@ var require_setfilmizle = __commonJS({
                   "User-Agent": "ExoPlayerLib/2.19.1",
                   "Referer": "https://fastplay.mom/"
                 };
+                var audioLabel = "1080p HLS";
+                if (fp.audioTracks && fp.audioTracks.length > 0) {
+                  if (fp.audioTracks.indexOf("tr") !== -1 && fp.audioTracks.indexOf("en") !== -1) {
+                    audioLabel = "1080p \u{1F1F9}\u{1F1F7} Dublaj + \u{1F310} Dual";
+                  } else if (fp.audioTracks.indexOf("tr") !== -1) {
+                    audioLabel = "1080p \u{1F1F9}\u{1F1F7} T\xFCrk\xE7e Dublaj";
+                  } else if (fp.audioTracks.indexOf("en") !== -1) {
+                    audioLabel = "1080p \u{1F310} Orijinal / Altyaz\u0131l\u0131";
+                  }
+                }
                 streams.push({
                   name: "SetFilmIzle",
-                  title: "\u231C SetFilmIzle \u231F | FastPlay (1080p HLS)",
+                  title: "\u231C SetFilmIzle \u231F | FastPlay [" + audioLabel + "]",
                   url: fp.manifestUrl + "#.m3u8",
                   quality: "1080p",
                   provider: "setfilmizle",

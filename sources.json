@@ -16,33 +16,9 @@
       "playback": "unverified"
     },
     {
-      "key": "ddizibox",
-      "id": "mum_ddizibox",
-      "name": "DDiziBox",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "sources-found",
-      "playback": "unverified"
-    },
-    {
       "key": "diziyou",
       "id": "mum_diziyou",
       "name": "DiziYou",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "empty",
-      "playback": "unverified"
-    },
-    {
-      "key": "hdfilmcehennemi",
-      "id": "mum_hdfilmcehennemi",
-      "name": "HDFilmCehennemi",
       "supportedTypes": [
         "movie",
         "tv"
@@ -64,46 +40,10 @@
       "playback": "unverified"
     },
     {
-      "key": "hdfilmizle",
-      "id": "mum_hdfilmizle",
-      "name": "HDFilmIzle",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "sources-found",
-      "playback": "unverified"
-    },
-    {
-      "key": "setfilmizle",
-      "id": "mum_setfilmizle",
-      "name": "SetFilmIzle",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "sources-found",
-      "playback": "unverified"
-    },
-    {
       "key": "sezonlukdizi",
       "id": "mum_sezonlukdizi",
       "name": "SezonlukDizi",
       "supportedTypes": [
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "sources-found",
-      "playback": "unverified"
-    },
-    {
-      "key": "vidlink",
-      "id": "mum_vidlink",
-      "name": "Vidlink",
-      "supportedTypes": [
-        "movie",
         "tv"
       ],
       "enabled": true,
@@ -123,33 +63,9 @@
       "playback": "unverified"
     },
     {
-      "key": "webteizle",
-      "id": "mum_webteizle",
-      "name": "Webteİzle",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "sources-found",
-      "playback": "unverified"
-    },
-    {
       "key": "yabancidizi",
       "id": "mum_yabancidizi",
       "name": "YabancıDizi",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "enabled": true,
-      "observation": "unverified",
-      "playback": "unverified"
-    },
-    {
-      "key": "diziboxizle",
-      "id": "mum_diziboxizle",
-      "name": "DiziBoxİzle",
       "supportedTypes": [
         "movie",
         "tv"

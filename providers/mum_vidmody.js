@@ -139,9 +139,6 @@ var require_config = __commonJS({
           dizi_full: "https://raw.githubusercontent.com/mooncrown04/m3ubirlestir/main/birlesik_diziler.m3u"
         },
         series: {
-          ddizibox: {
-            base: "https://ddizibox.com"
-          },
           diziyou: {
             base: "https://www.diziyou.love",
             storage: "https://storage.diziyou.love"
@@ -151,41 +148,17 @@ var require_config = __commonJS({
           },
           yabancidizi: {
             base: "https://yabancidizi.news"
-          },
-          diziboxizle: {
-            base: "https://diziboxizle.com"
           }
         },
         movies: {
-          hdfilmcehennemi: {
-            base: "https://www.hdfilmcehennemi.nl"
-          },
           hdfilmdelisi: {
             base: "https://hdfilmdelisi.one"
           },
-          hdfilmizle: {
-            bases: [
-              "https://www.hdfilmizle.ink",
-              "https://www.hdfilmizle.vip"
-            ]
-          },
-          setfilmizle: {
-            base: "https://www.setfilmizle.ltd"
-          },
           vidmody: {
             base: "https://ha.vixolity.com"
-          },
-          webteizle: {
-            base: "https://webteizle.info"
           }
         },
-        meta_resolvers: {
-          vidlink: {
-            api: "https://vidlink.pro/api/b",
-            enc_dec: "https://enc-dec.app/api",
-            base: "https://vidlink.pro"
-          }
-        }
+        meta_resolvers: {}
       }
     };
   }

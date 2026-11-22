@@ -42,10 +42,9 @@ Aşağıdaki bilgiler kullanıcının **Windows Nuvio + Anthology 1.8.39** testl
 
 | Sağlayıcı | Kaynak araması | Oynatma |
 |---|---|---|
-| Anthology M3U, DDiziBox, HDFilmDelisi, HDFilmIzle, SetFilmIzle, SezonlukDizi, Vidlink, Vidmody, Webteizle | Kaynak dönmüş | Doğrulanmadı |
-| YabancıDizi, DiziBoxİzle | Yeni eklendi; canlı sorgu yapılmadı | Doğrulanmadı |
+| Anthology M3U, HDFilmDelisi, SezonlukDizi, Vidmody, RoketDizi | Kaynak dönmüş | Doğrulanmadı |
+| YabancıDizi | Yeni eklendi; canlı sorgu yapılmadı | Doğrulanmadı |
 | DiziYou | Güncel `.love` akışıyla kaynak bulundu | Oynatma doğrulanmadı |
-| HDFilmCehennemi | Kullanıcı testinde boş | Doğrulanmadı |
 
 Anthology M3U'nun yalnız film/dizi listeleri tutulur; canlı M3U sağlayıcısı ayrıydı ve kaldırıldı. Genel film/dizi siteleri animasyon da içerebilir; film/TV olarak etiketlenmiş her içeriğin türünü bu scraper arayüzüyle kesin filtrelemek mümkün değildir. Animeye özel sağlayıcılar ve anime türü çağrıları kapsam dışıdır.
 

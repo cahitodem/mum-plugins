@@ -19,7 +19,6 @@ Bu doğrulama kod incelemesine dayanır. Yerel testlerde Node VM kullanıldı; J
 
 1. Kullanıcının kurulu Nuvio sürümü ve her başarısız örneğin içerik kimliğiyle tekrar üretim kaydı alın.
 2. DiziYou: Güncel `.love` arama → gerçek sezon/bölüm → player sayfası zinciri sentetik fixture ve Breaking Bad S5E16 canlı kaynak aramasında sonuç verdi. Oynatma doğrulanmadı.
-3. HDFilmCehennemi: içerik eşleştirmesi, HTTP durumu ve embed ayrıştırmasını ayrı aşamalarda ölçün. `[]` sonuca bakarak engelleme veya bölge kısıtı iddia etmeyin.
-4. Sağlayıcılar için kişisel veri içermeyen HTML fixture'ları ekleyin; ardından yalnız kanıtlanan parser farklarını düzeltin. Oynatma doğrulamasını ayrı Windows matrisiyle yapın.
+3. Sağlayıcılar için kişisel veri içermeyen HTML fixture'ları ekleyin; ardından yalnız kanıtlanan parser farklarını düzeltin. Oynatma doğrulamasını ayrı Windows matrisiyle yapın.
 
 Yeni build, adapter ve manifest testleri bu ilk geliştirme altyapısını doğrular. Canlı kaynak erişimi ve video oynatma bu teslimatta doğrulanmamıştır.

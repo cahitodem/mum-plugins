@@ -316,7 +316,7 @@ test('BelgeselX: Resolves OK.ru embed into raw direct video stream from metadata
     }
 });
 
-test('BelgeselX: Search fallback matches documentary when direct slug probe does not match', async () => {
+test('BelgeselX: Search fallback matches documentary via ?s= when sitemap is unavailable', async () => {
     const fetchMock = async (url) => {
         const u = String(url);
 
@@ -333,6 +333,10 @@ test('BelgeselX: Search fallback matches documentary when direct slug probe does
 
         if (u.includes('/belgesel/antik-uzaylilar-belgesel-serisi') || u.includes('/belgesel/ancient-aliens')) {
             return { ok: false, status: 404, text: async () => '404 Not Found' };
+        }
+
+        if (u.includes('/sitemap.php')) {
+            return { ok: false, status: 404, text: async () => 'Not Found' };
         }
 
         if (u.includes('?s=')) {
@@ -382,6 +386,7 @@ test('BelgeselX: Search fallback matches documentary when direct slug probe does
     const originalFetch = global.fetch;
     global.fetch = fetchMock;
     try {
+        if (globalThis.__MUM_BELGESELX_SITEMAP__) delete globalThis.__MUM_BELGESELX_SITEMAP__['https://belgeselx.com'];
         const streams = await belgeselx.getStreams('75', 'tv', 1, 1);
         assert.equal(streams.length, 1);
         assert.ok(streams[0].url.includes('drive.usercontent.google.com/download'));
@@ -390,7 +395,192 @@ test('BelgeselX: Search fallback matches documentary when direct slug probe does
     }
 });
 
-test('BelgeselX: Completely missing documentary returns empty gracefully without crashing', async () => {
+test('BelgeselX: Sitemap search matches documentary and rejects sequel slug mismatch (Planet Earth vs planet-earth-2)', async () => {
+    const fetchMock = async (url) => {
+        const u = String(url);
+        if (u.includes('api.themoviedb.org/3/tv/1044/alternative_titles')) {
+            return { ok: true, json: async () => ({ results: [{ iso_3166_1: 'TR', title: 'Sadece Yeryüzü' }] }) };
+        }
+        if (u.includes('api.themoviedb.org/3/tv/1044')) {
+            return {
+                ok: true,
+                json: async () => ({
+                    name: 'Yeryüzü',
+                    original_name: 'Planet Earth',
+                    first_air_date: '2006-03-05'
+                })
+            };
+        }
+        if (u.includes('/belgesel/yeryuzu') || u.includes('/belgesel/planet-earth') || u.includes('/belgesel/sadece-yeryuzu')) {
+            return { ok: false, status: 404, text: async () => '404' };
+        }
+        if (u === 'https://belgeselx.com/sitemap.php') {
+            return {
+                ok: true,
+                text: async () => `<?xml version="1.0" encoding="UTF-8"?>
+                <urlset>
+                    <url><loc>https://belgeselx.com/belgesel/planet-earth-2</loc></url>
+                    <url><loc>https://belgeselx.com/belgeseldizi/planet-earth-2</loc></url>
+                </urlset>`
+            };
+        }
+        throw new Error('Unexpected fetch: ' + u);
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock;
+    try {
+        if (globalThis.__MUM_BELGESELX_SITEMAP__) delete globalThis.__MUM_BELGESELX_SITEMAP__['https://belgeselx.com'];
+        await assert.rejects(async () => {
+            await belgeselx.getStreams('1044', 'tv', 1, 1);
+        }, err => err.name === 'ProviderError' && err.code === 'NO_MATCH');
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
+test('BelgeselX: new4.php skips dummy theblacklist711tr.mp4 video tag and resolves belgeselx2.php?cid= without Referer', async () => {
+    const cidHeadersSeen = [];
+    const fetchMock = async (url, opts = {}) => {
+        const u = String(url);
+        if (u.includes('api.themoviedb.org/3/tv/88801')) {
+            return {
+                ok: true,
+                json: async () => ({
+                    name: 'Yeni Dünyalar',
+                    original_name: 'New Worlds'
+                })
+            };
+        }
+        if (u === 'https://belgeselx.com/belgesel/yeni-dunyalar') {
+            return {
+                ok: true,
+                text: async () => `
+                    <script>
+                    diziGetir('20001','5','1','','Yeni Dünyalar Bölümü','500','Ocak 2024','1','1','88801','yeni-dunyalar','0','','0','1');
+                    function diziGetir(id, ic1, ic2, ic3, baslik, hit, tarih, sezon, bolum, diziid, sefurl) {}
+                    </script>
+                `
+            };
+        }
+        if (u.includes('video/data/new4.php?id=20001&sira=1')) {
+            return {
+                ok: true,
+                text: async () => `
+                    <html><head><meta name="referrer" content="no-referrer"></head>
+                    <body>
+                        <div class="jw-media"><video src="https://downloader.disk.yandex.ru/disk/sample?filename=theblacklist711tr.mp4"></video></div>
+                        <script>
+                        var player = jwplayer("vplayer").setup({
+                            sources: [
+                                { file: "https://belgeselx.com/video/belgeselx2.php?cid=pw/TEST_CID", label: "720p", type: "video/mp4" },
+                                { file: "https://belgeselx.com/video/belgeselx.php?cid=pw/TEST_CID", label: "480p", type: "video/mp4" }
+                            ]
+                        });
+                        </script>
+                    </body></html>
+                `
+            };
+        }
+        if (u === 'https://belgeselx.com/video/belgeselx2.php?cid=pw/TEST_CID') {
+            cidHeadersSeen.push(opts.headers || {});
+            return {
+                ok: false,
+                status: 302,
+                headers: new Headers({ location: 'https://3.bp.blogspot.com/pw/TEST_CID=m22' }),
+                text: async () => ''
+            };
+        }
+        if (u === 'https://3.bp.blogspot.com/pw/TEST_CID=m22') {
+            cidHeadersSeen.push(opts.headers || {});
+            return {
+                ok: false,
+                status: 302,
+                headers: new Headers({ location: 'https://rr2---sn-test.googlevideo.com/videoplayback?id=abc' }),
+                text: async () => ''
+            };
+        }
+        throw new Error('Unexpected fetch: ' + u);
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock;
+    try {
+        const streams = await belgeselx.getStreams('88801', 'tv', 1, 1);
+        assert.equal(streams.length, 1);
+        assert.equal(streams[0].url, 'https://rr2---sn-test.googlevideo.com/videoplayback?id=abc');
+        assert.equal(streams[0].quality, '720p');
+        assert.equal(streams[0].type, 'mp4');
+        assert.equal(streams[0].headers.Referer, undefined, 'googlevideo URL must NOT carry Referer header');
+        assert.equal(cidHeadersSeen.length, 2);
+        assert.equal(cidHeadersSeen[0].Referer, undefined);
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
+test('BelgeselX: Resolves Yandex.Disk (new2) and Dailymotion (new1) slots when primary slots fail', async () => {
+    const fetchMock = async (url) => {
+        const u = String(url);
+        if (u.includes('api.themoviedb.org/3/tv/88802')) {
+            return { ok: true, json: async () => ({ name: 'Yandex Belgesel', original_name: 'Yandex Doc' }) };
+        }
+        if (u === 'https://belgeselx.com/belgesel/yandex-belgesel') {
+            return {
+                ok: true,
+                text: async () => `<script>diziGetir('20002','3','2','','Bölüm 1','10','2024','1','1','88802','yandex-belgesel','0','','0','1');</script>`
+            };
+        }
+        if (u.includes('video/data/new2.php?id=20002&sira=1')) {
+            return { ok: true, text: async () => `<iframe src="https://yadi.sk/d/TEST_KEY"></iframe>` };
+        }
+        if (u.includes('cloud-api.yandex.net/v1/disk/public/resources/download')) {
+            return { ok: true, json: async () => ({ href: 'https://downloader.disk.yandex.ru/disk/real_doc.mp4' }) };
+        }
+        if (u.includes('api.themoviedb.org/3/tv/88803')) {
+            return { ok: true, json: async () => ({ name: 'Dailymotion Belgesel', original_name: 'DM Doc' }) };
+        }
+        if (u === 'https://belgeselx.com/belgesel/dailymotion-belgesel') {
+            return {
+                ok: true,
+                text: async () => `<script>diziGetir('20003','2','','','Bölüm 1','10','2024','1','1','88803','dailymotion-belgesel','0','','0','1');</script>`
+            };
+        }
+        if (u.includes('video/data/new1.php?id=20003&sira=1')) {
+            return { ok: true, text: async () => `<iframe src="https://www.dailymotion.com/embed/video/x8abcde"></iframe>` };
+        }
+        if (u.includes('dailymotion.com/player/metadata/video/x8abcde')) {
+            return {
+                ok: true,
+                json: async () => ({
+                    qualities: {
+                        '720': [{ type: 'application/x-mpegURL', url: 'https://www.dailymotion.com/cdn/manifest/video/x8abcde.m3u8' }]
+                    }
+                })
+            };
+        }
+        throw new Error('Unexpected fetch: ' + u);
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock;
+    try {
+        const yStreams = await belgeselx.getStreams('88802', 'tv', 1, 1);
+        assert.equal(yStreams.length, 1);
+        assert.equal(yStreams[0].url, 'https://downloader.disk.yandex.ru/disk/real_doc.mp4');
+        assert.equal(yStreams[0].type, 'mp4');
+
+        const dStreams = await belgeselx.getStreams('88803', 'tv', 1, 1);
+        assert.equal(dStreams.length, 1);
+        assert.equal(dStreams[0].url, 'https://www.dailymotion.com/cdn/manifest/video/x8abcde.m3u8');
+        assert.equal(dStreams[0].type, 'hls');
+        assert.equal(dStreams[0].quality, '720p');
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
+test('BelgeselX: Completely missing documentary throws NO_MATCH and compiled bundle reports no-match', async () => {
     const fetchMock = async (url) => {
         const u = String(url);
         if (u.includes('api.themoviedb.org')) {
@@ -405,6 +595,9 @@ test('BelgeselX: Completely missing documentary returns empty gracefully without
         if (u.includes('/belgesel/')) {
             return { ok: false, status: 404, text: async () => '404' };
         }
+        if (u.includes('/sitemap.php')) {
+            return { ok: true, text: async () => '<urlset></urlset>' };
+        }
         if (u.includes('?s=')) {
             return { ok: true, text: async () => '<div class="px-toplist"></div>' };
         }
@@ -414,11 +607,48 @@ test('BelgeselX: Completely missing documentary returns empty gracefully without
     const originalFetch = global.fetch;
     global.fetch = fetchMock;
     try {
-        const streams = await belgeselx.getStreams('9999999', 'movie');
-        assert.deepEqual(streams, []);
+        await assert.rejects(async () => {
+            await belgeselx.getStreams('9999999', 'movie');
+        }, err => err.name === 'ProviderError' && err.code === 'NO_MATCH');
     } finally {
         global.fetch = originalFetch;
     }
+
+    const { provider, reports } = loadBundle(fetchMock);
+    const out = await provider.getStreams('9999999', 'movie');
+    assert.equal(out.length, 0);
+    assert.match(reports.at(-1), /no-match/);
+});
+
+test('BelgeselX: HTTP 403 block throws HTTP_BLOCKED and compiled bundle reports http-blocked', async () => {
+    const fetchMock = async (url) => {
+        const u = String(url);
+        if (u.includes('api.themoviedb.org')) {
+            return {
+                ok: true,
+                json: async () => ({
+                    name: 'Blocked Documentary',
+                    original_name: 'Blocked Documentary'
+                })
+            };
+        }
+        return { ok: false, status: 403, text: async () => 'Forbidden' };
+    };
+
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock;
+    try {
+        await assert.rejects(async () => {
+            await belgeselx.getStreams('9999998', 'movie');
+        }, err => err.name === 'ProviderError' && err.code === 'HTTP_BLOCKED');
+    } finally {
+        global.fetch = originalFetch;
+    }
+
+    const { provider, reports } = loadBundle(fetchMock);
+    const out = await provider.getStreams('9999998', 'movie');
+    assert.equal(out.length, 0);
+    assert.match(reports.at(-1), /http-blocked/);
 });
 
 test('BelgeselX: Bundle VM execution test from manifest.json scraper', async () => {

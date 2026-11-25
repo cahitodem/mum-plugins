@@ -133,3 +133,23 @@ test('matching: pickBestCandidate rejects candidate with foreign slug subtitle o
   const matched = pickBestCandidate(candidates, 'Karma', '2025');
   assert.equal(matched, null, 'Foreign homonym with slug karma-akyeon must not match Karma');
 });
+
+test('matching: preserveSlugNumbers prevents Planet Earth (2006) from matching planet-earth-2', () => {
+  const candidates = [
+    { title: 'planet earth 2', slug: 'planet-earth-2', year: '', href: 'https://belgeselx.com/belgesel/planet-earth-2' }
+  ];
+  const matched = pickBestCandidate(candidates, 'Planet Earth', '2006', {
+    minCoverage: 0.65,
+    minScore: 45,
+    preserveSlugNumbers: true
+  });
+  assert.equal(matched, null, 'Sequel slug planet-earth-2 must not match Planet Earth');
+
+  // Default behavior preserves trailing digit stripping for diziyou-style slugs (e.g. fixture-show2)
+  const defaultMatched = pickBestCandidate(
+    [{ title: 'Fixture Show', slug: 'fixture-show2', year: '', href: 'https://www.diziyou.love/fixture-show2/' }],
+    'Fixture Show',
+    ''
+  );
+  assert.ok(defaultMatched, 'Default mode must still match trailing-digit mirror slugs');
+});

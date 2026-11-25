@@ -124,6 +124,18 @@ test('DiziBox: Successful TV episode stream extraction with HLS, subs and proxyH
       };
     }
 
+    if (u.includes('pilavyerplay.top/api/stream.php')) {
+      return {
+        ok: true,
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-VERSION:3',
+          '#EXT-X-STREAM-INF:BANDWIDTH=3220800,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"',
+          'stream.php?v=testvideo123&p=stream_v720%2Findex.m3u8'
+        ].join('\n')
+      };
+    }
+
     throw new Error('Unexpected fetch for: ' + u);
   };
 
@@ -139,14 +151,19 @@ test('DiziBox: Successful TV episode stream extraction with HLS, subs and proxyH
     assert.equal(s.name, 'DBOX');
     assert.ok(s.title.includes('Türkçe Dublaj'), 'Title should reflect audio label');
     assert.equal(s.url, 'https://pilavyerplay.top/api/stream.php?v=testvideo123&token=mocktoken456');
-    assert.equal(s.quality, '1080p');
+    assert.equal(s.quality, '720p', 'Quality must be parsed from master playlist RESOLUTION');
+    assert.equal(s.type, 'hls');
+    assert.equal(s.provider, 'dizibox');
+    assert.equal(s.behaviorHints.notWebReady, true);
     assert.ok(s.behaviorHints.proxyHeaders.request.Referer.includes('pilavyerplay.top'), 'Proxy headers must contain player Referer');
 
-    // Subtitles validation
+    // Subtitles validation (Nuvio PluginSubtitleResult contract: url, language, name, headers)
     assert.equal(s.subtitles.length, 2, 'Should extract 2 subtitles');
-    assert.equal(s.subtitles[0].lang, 'tur');
-    assert.equal(s.subtitles[0].label, 'Türkçe Altyazı');
-    assert.equal(s.subtitles[1].lang, 'eng');
+    assert.equal(s.subtitles[0].language, 'tur');
+    assert.equal(s.subtitles[0].name, 'Türkçe Altyazı');
+    assert.ok(s.subtitles[0].headers.Referer.includes('pilavyerplay.top'));
+    assert.equal(s.subtitles[1].language, 'eng');
+    assert.equal(s.subtitles[1].name, 'İngilizce Altyazı');
   } finally {
     global.fetch = originalFetch;
   }
@@ -156,6 +173,10 @@ test('DiziBox: Successful TV episode stream extraction with HLS, subs and proxyH
   const bundleStreams = await provider.getStreams('1396', 'tv', 1, 1);
   assert.equal(bundleStreams.length, 1, 'Compiled bundle should return 1 stream');
   assert.equal(bundleStreams[0].name, 'DBOX');
+  assert.equal(bundleStreams[0].type, 'hls');
+  assert.equal(bundleStreams[0].quality, '720p');
+  assert.equal(bundleStreams[0].subtitles[0].language, 'tur');
+  assert.equal(bundleStreams[0].subtitles[0].name, 'Türkçe Altyazı');
   assert.ok(reports.some(r => r.includes('sources-found')), 'Bundle must report sources-found status');
 });
 
@@ -450,6 +471,13 @@ test("DiziBox: Matches titles with apostrophes (Marvel's The Punisher) and acron
       };
     }
 
+    if (u.includes('pilavyerplay.top/api/stream.php')) {
+      return {
+        ok: true,
+        text: async () => '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=3840x2160\nstream_v2160/index.m3u8'
+      };
+    }
+
     throw new Error('Unexpected fetch for: ' + u);
   };
 
@@ -459,7 +487,40 @@ test("DiziBox: Matches titles with apostrophes (Marvel's The Punisher) and acron
     const streams = await dizibox.getStreams('67178', 'tv', 1, 1);
     assert.equal(streams.length, 1);
     assert.equal(streams[0].url, 'https://pilavyerplay.top/api/stream.php?v=punisher');
+    assert.equal(streams[0].quality, '2160p');
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test('DiziBox: HTTP 403 block throws HTTP_BLOCKED and compiled bundle reports http-blocked', async () => {
+  const fetchMock = async (url) => {
+    const u = String(url);
+    if (u.includes('api.themoviedb.org/3/tv/67179')) {
+      return {
+        ok: true,
+        json: async () => ({
+          name: 'Blocked DiziBox Show',
+          original_name: 'Blocked DiziBox Show',
+          first_air_date: '2024-01-01'
+        })
+      };
+    }
+    return { ok: false, status: 403, text: async () => 'Forbidden' };
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = fetchMock;
+  try {
+    await assert.rejects(async () => {
+      await dizibox.getStreams('67179', 'tv', 1, 1);
+    }, err => err.name === 'ProviderError' && err.code === 'HTTP_BLOCKED');
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  const { provider, reports } = loadBundle(fetchMock);
+  const out = await provider.getStreams('67179', 'tv', 1, 1);
+  assert.equal(out.length, 0);
+  assert.ok(reports.some(r => r.includes('http-blocked')), 'Bundle must report http-blocked');
 });

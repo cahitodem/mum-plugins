@@ -27,18 +27,21 @@ function tokenize(str) {
   });
 }
 
-function cleanSlug(slug) {
+function cleanSlug(slug, options) {
   if (!slug) return '';
   try {
     var last = String(slug).split('/').filter(Boolean).pop() || '';
-    return last
+    var cleaned = last
       .replace(/-film-izle.*$/i, '')
       .replace(/-izle.*$/i, '')
       .replace(/-dizi(?:si)?.*$/i, '')
       .replace(/-turkce.*$/i, '')
       .replace(/-dublaj.*$/i, '')
-      .replace(/-altyazi.*$/i, '')
-      .replace(/(\D+)\d+$/i, '$1')
+      .replace(/-altyazi.*$/i, '');
+    if (!options || !options.preserveSlugNumbers) {
+      cleaned = cleaned.replace(/(\D+)\d+$/i, '$1');
+    }
+    return cleaned
       .replace(/-/g, ' ')
       .trim();
   } catch (_) {
@@ -57,7 +60,7 @@ function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candY
 
   var tNorm = normalizeText(targetTitle);
   var cNorm = normalizeText(candTitle);
-  var sClean = cleanSlug(candSlug);
+  var sClean = cleanSlug(candSlug, opts);
   var sNorm = normalizeText(sClean);
 
   if (!tNorm || (!cNorm && !sNorm)) {
@@ -72,6 +75,23 @@ function calculateMatchScore(targetTitle, targetYear, candTitle, candSlug, candY
     var diff = Math.abs(targetY - candY);
     if (diff > 1) {
       return { matched: false, score: 0, reason: 'year_mismatch_' + targetY + '_vs_' + candY };
+    }
+  }
+
+  // Devam serisi / bölüm numarası koruması (örn. Planet Earth vs planet-earth-2)
+  if (opts.preserveSlugNumbers) {
+    var extractSeqNums = function(s) {
+      return (s.match(/\b\d+\b/g) || []).filter(function(d) {
+        var n = parseInt(d, 10);
+        return n > 0 && n < 1900;
+      });
+    };
+    var tNums = extractSeqNums(tNorm);
+    var cNums = extractSeqNums(cNorm + ' ' + sNorm);
+    var hasExtraSeq = cNums.some(function(d) { return tNums.indexOf(d) === -1; });
+    var hasMissingSeq = tNums.some(function(d) { return cNums.indexOf(d) === -1; });
+    if (hasExtraSeq || hasMissingSeq) {
+      return { matched: false, score: 0, reason: 'sequel_number_mismatch' };
     }
   }
 

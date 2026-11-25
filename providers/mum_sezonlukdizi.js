@@ -151,6 +151,10 @@ var require_config = __commonJS({
           },
           belgeselx: {
             base: "https://belgeselx.com"
+          },
+          dizibox: {
+            base: "https://ddizibox.click",
+            player: "https://pilavyerplay.top"
           }
         },
         movies: {

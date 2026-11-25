@@ -151,6 +151,10 @@ var require_config = __commonJS({
           },
           belgeselx: {
             base: "https://belgeselx.com"
+          },
+          dizibox: {
+            base: "https://ddizibox.click",
+            player: "https://pilavyerplay.top"
           }
         },
         movies: {
@@ -247,11 +251,15 @@ var require_matching = __commonJS({
         return w.length > 1 && !STOP_WORDS.has(w);
       });
     }
-    function cleanSlug(slug) {
+    function cleanSlug(slug, options) {
       if (!slug) return "";
       try {
         var last = String(slug).split("/").filter(Boolean).pop() || "";
-        return last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi(?:si)?.*$/i, "").replace(/-turkce.*$/i, "").replace(/-dublaj.*$/i, "").replace(/-altyazi.*$/i, "").replace(/(\D+)\d+$/i, "$1").replace(/-/g, " ").trim();
+        var cleaned = last.replace(/-film-izle.*$/i, "").replace(/-izle.*$/i, "").replace(/-dizi(?:si)?.*$/i, "").replace(/-turkce.*$/i, "").replace(/-dublaj.*$/i, "").replace(/-altyazi.*$/i, "");
+        if (!options || !options.preserveSlugNumbers) {
+          cleaned = cleaned.replace(/(\D+)\d+$/i, "$1");
+        }
+        return cleaned.replace(/-/g, " ").trim();
       } catch (_) {
         return String(slug).replace(/-/g, " ");
       }
@@ -262,7 +270,7 @@ var require_matching = __commonJS({
       var minScore = opts.minScore !== void 0 ? opts.minScore : 50;
       var tNorm = normalizeText(targetTitle);
       var cNorm = normalizeText(candTitle);
-      var sClean = cleanSlug(candSlug);
+      var sClean = cleanSlug(candSlug, opts);
       var sNorm = normalizeText(sClean);
       if (!tNorm || !cNorm && !sNorm) {
         return { matched: false, score: 0, reason: "empty_input" };
@@ -273,6 +281,25 @@ var require_matching = __commonJS({
         var diff = Math.abs(targetY - candY);
         if (diff > 1) {
           return { matched: false, score: 0, reason: "year_mismatch_" + targetY + "_vs_" + candY };
+        }
+      }
+      if (opts.preserveSlugNumbers) {
+        var extractSeqNums = function(s) {
+          return (s.match(/\b\d+\b/g) || []).filter(function(d) {
+            var n = parseInt(d, 10);
+            return n > 0 && n < 1900;
+          });
+        };
+        var tNums = extractSeqNums(tNorm);
+        var cNums = extractSeqNums(cNorm + " " + sNorm);
+        var hasExtraSeq = cNums.some(function(d) {
+          return tNums.indexOf(d) === -1;
+        });
+        var hasMissingSeq = tNums.some(function(d) {
+          return cNums.indexOf(d) === -1;
+        });
+        if (hasExtraSeq || hasMissingSeq) {
+          return { matched: false, score: 0, reason: "sequel_number_mismatch" };
         }
       }
       var tTokens = tokenize(targetTitle);

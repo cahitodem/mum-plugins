@@ -12,7 +12,7 @@ function cfgReady() {
         _cfgReady = loadConfig().then(function () {
             var v = val('urls.series.dizibox.base') || val('urls.movies.dizibox.base') || val('urls.dizibox.base');
             if (v) BASE_URL = String(v).replace(/\/+$/, '');
-            var pv = val('urls.dizibox.player') || val('urls.pilavyer.base');
+            var pv = val('urls.series.dizibox.player') || val('urls.dizibox.player') || val('urls.pilavyer.base');
             if (pv) PLAYER_BASE = String(pv).replace(/\/+$/, '');
             if (WORKING_HEADERS) WORKING_HEADERS.Referer = BASE_URL + '/';
         }).catch(function () {});
@@ -283,7 +283,13 @@ async function extractPilavyerStream(pageHtml, pageUrl, signal) {
         return null;
     }
 
-    // 5. Altyazıları Nuvio standart formatına dönüştür
+    var playerEndpoint = usedPlayerBase + '/assets/js/s.php?s=' + encodeURIComponent(pvSlug);
+    var subHeaders = {
+        'User-Agent': DEFAULT_UA,
+        'Referer': playerEndpoint
+    };
+
+    // 5. Altyazıları Nuvio PluginSubtitleResult sözleşmesine (url, language, name, headers) dönüştür
     var subtitles = [];
     if (Array.isArray(config.subs)) {
         for (var i = 0; i < config.subs.length; i++) {
@@ -293,8 +299,9 @@ async function extractPilavyerStream(pageHtml, pageUrl, signal) {
                 var label = s.label || (lang === 'tur' ? 'Türkçe Altyazı' : lang === 'eng' ? 'İngilizce Altyazı' : lang);
                 subtitles.push({
                     url: s.src,
-                    lang: lang,
-                    label: label,
+                    language: lang,
+                    name: label,
+                    headers: subHeaders,
                     default: !!s.default
                 });
             }
@@ -312,27 +319,88 @@ async function extractPilavyerStream(pageHtml, pageUrl, signal) {
 
     return {
         streamUrl: config.stream,
-        playerUrl: usedPlayerBase + '/assets/js/s.php?s=' + encodeURIComponent(pvSlug),
+        playerUrl: playerEndpoint,
         audioLabel: audioLabel,
         title: config.title || '',
         subtitles: subtitles
     };
 }
 
+/**
+ * HLS Master Playlist üzerinden gerçek maksimum çözünürlüğü (2160p/1440p/1080p/720p/480p) belirler.
+ */
+async function resolveMasterQuality(streamUrl, playerUrl, signal) {
+    var fallback = '1080p';
+    if (!streamUrl) return fallback;
+    try {
+        var res = await fetchWithTimeout(streamUrl, {
+            headers: {
+                'User-Agent': DEFAULT_UA,
+                'Referer': playerUrl
+            },
+            signal: signal
+        }, 3000);
+        if (!res.ok) return fallback;
+        var text = await res.text();
+        if (!text || text.indexOf('#EXTM3U') === -1) return fallback;
+
+        var maxScore = 0;
+        var regex = /#EXT-X-STREAM-INF:[^\r\n]*RESOLUTION=(\d+)x(\d+)/gi;
+        var m;
+        while ((m = regex.exec(text)) !== null) {
+            var width = parseInt(m[1], 10) || 0;
+            var height = parseInt(m[2], 10) || 0;
+            var qScore = 0;
+            if (height >= 2160 || width >= 3840) qScore = 2160;
+            else if (height >= 1440 || width >= 2560) qScore = 1440;
+            else if (height >= 1080 || width >= 1920) qScore = 1080;
+            else if (height >= 720 || width >= 1280) qScore = 720;
+            else if (height >= 480 || width >= 854) qScore = 480;
+            else if (height > 0) qScore = height;
+            if (qScore > maxScore) maxScore = qScore;
+        }
+        return maxScore > 0 ? (maxScore + 'p') : fallback;
+    } catch (e) {
+        if (signal && signal.aborted) {
+            throw e;
+        }
+        return fallback;
+    }
+}
+
 // ── Ana getStreams Sağlayıcı Fonksiyonu ───────────────────────────────
 async function getStreams(id, type, season, episode, options) {
     await cfgReady();
     var signal = options && options.signal;
+    if (typeof id === 'object' && id !== null) {
+        type = id.type || type;
+        season = id.season !== undefined ? id.season : season;
+        episode = id.episode !== undefined ? id.episode : episode;
+        if (id.signal && !signal) signal = id.signal;
+        id = id.id;
+    }
     type = type === 'series' ? 'tv' : type;
+    if (type !== 'tv' && type !== 'movie') return [];
+    if (type === 'tv') {
+        if (season === null || season === undefined || season === '' ||
+            episode === null || episode === undefined || episode === '' ||
+            !Number.isInteger(Number(season)) || Number(season) < 0 ||
+            !Number.isInteger(Number(episode)) || Number(episode) < 1) {
+            return [];
+        }
+        season = Number(season);
+        episode = Number(episode);
+    }
 
     // 1. TMDb meta verilerini çöz
     var info = await resolveTmdbInfo(id, type, signal);
     if (!info.title && !info.origTitle) {
-        throw new ProviderError('TMDB_ERROR');
+        throw new ProviderError('TMDB_ERROR', 'TMDB metadata unavailable', 'tmdb');
     }
 
     var pageHtml = null;
     var targetPageUrl = null;
+    var blockedStatus = 0;
 
     // 2. Öncelikli Hızlı Yol: Prediktif Slug Yoklaması (Predictive Slug Probe)
     // DiziBox URL şablonu standarttır:
@@ -360,6 +428,11 @@ async function getStreams(id, type, season, episode, options) {
                 signal: signal
             }, 3500);
 
+            if (probeRes.status === 403 || probeRes.status === 429) {
+                blockedStatus = probeRes.status;
+                continue;
+            }
+
             if (probeRes.ok) {
                 var probeHtml = await probeRes.text();
                 if (probeHtml.includes('data-pv=')) {
@@ -368,7 +441,11 @@ async function getStreams(id, type, season, episode, options) {
                     break;
                 }
             }
-        } catch (_) {}
+        } catch (probeErr) {
+            if (probeErr && (probeErr.name === 'AbortError' || probeErr.message === 'TIMEOUT' || (signal && signal.aborted))) {
+                if (signal && signal.aborted) throw probeErr;
+            }
+        }
     }
 
     // 3. Eğer prediktif yoklama sonuç vermediyse /ara?q= arama mekanizmasıyla devam et
@@ -392,6 +469,11 @@ async function getStreams(id, type, season, episode, options) {
                     signal: signal
                 }, 8000);
 
+                if (searchRes.status === 403 || searchRes.status === 429) {
+                    blockedStatus = searchRes.status;
+                    continue;
+                }
+
                 if (searchRes.ok) {
                     var searchHtml = await searchRes.text();
                     var found = parseSearchResults(searchHtml, type, BASE_URL);
@@ -411,7 +493,10 @@ async function getStreams(id, type, season, episode, options) {
         }
 
         if (!bestCandidate) {
-            throw new ProviderError('NO_MATCH');
+            if (blockedStatus) {
+                throw new ProviderError('HTTP_BLOCKED', 'Blocked during search', 'search', blockedStatus);
+            }
+            throw new ProviderError('NO_MATCH', 'No matching candidate found', 'matching');
         }
 
         if (type === 'tv') {
@@ -426,6 +511,10 @@ async function getStreams(id, type, season, episode, options) {
             signal: signal
         }, 8000);
 
+        if (pageRes.status === 403 || pageRes.status === 429) {
+            throw new ProviderError('HTTP_BLOCKED', 'Blocked fetching episode/movie page', 'details', pageRes.status);
+        }
+
         // Eğer prediktif TV bölüm URL'si 404 döndüyse dizi ana sayfasından bölüm bağlantısını ara
         if (!pageRes.ok && type === 'tv') {
             try {
@@ -433,12 +522,16 @@ async function getStreams(id, type, season, episode, options) {
                     headers: WORKING_HEADERS,
                     signal: signal
                 }, 8000);
+                if (showRes.status === 403 || showRes.status === 429) {
+                    throw new ProviderError('HTTP_BLOCKED', 'Blocked fetching series page', 'details', showRes.status);
+                }
                 if (showRes.ok) {
                     var showHtml = await showRes.text();
                     var $show = cheerio.load(showHtml);
                     var epPattern = new RegExp('sezon-' + season + '/bolum-' + episode + '(?:[/?#]|$)', 'i');
                     var foundEpHref = null;
                     $show('a[href]').each(function () {
+                        if (foundEpHref) return;
                         var h = $(this).attr('href') || '';
                         if (epPattern.test(h)) {
                             foundEpHref = h;
@@ -451,14 +544,21 @@ async function getStreams(id, type, season, episode, options) {
                             headers: WORKING_HEADERS,
                             signal: signal
                         }, 8000);
+                        if (pageRes.status === 403 || pageRes.status === 429) {
+                            throw new ProviderError('HTTP_BLOCKED', 'Blocked fetching episode page', 'details', pageRes.status);
+                        }
                         targetPageUrl = actualEpUrl;
                     }
                 }
-            } catch (_) {}
+            } catch (eShow) {
+                if (eShow && (eShow.name === 'ProviderError' || eShow.name === 'AbortError' || eShow.message === 'TIMEOUT')) {
+                    throw eShow;
+                }
+            }
         }
 
         if (!pageRes || !pageRes.ok) {
-            throw new ProviderError('NO_MATCH');
+            throw new ProviderError('NO_MATCH', 'Episode or movie page not found', 'details', pageRes ? pageRes.status : undefined);
         }
 
         pageHtml = await pageRes.text();
@@ -470,24 +570,28 @@ async function getStreams(id, type, season, episode, options) {
         return [];
     }
 
-    // 5. Akış nesnesini oluştur
+    // 5. HLS Master Playlist üzerinden gerçek maksimum kaliteyi çöz
+    var resolvedQuality = await resolveMasterQuality(extracted.streamUrl, extracted.playerUrl, signal);
+
+    // 6. Akış nesnesini oluştur
     var streamTitle = PROVIDER_NAME + ' - ' + extracted.audioLabel + ' (HLS Multi)';
+    var streamHeaders = {
+        'User-Agent': DEFAULT_UA,
+        'Referer': extracted.playerUrl
+    };
     var stream = {
         name: PROVIDER_NAME,
         title: streamTitle,
         url: extracted.streamUrl,
-        quality: '1080p',
-        headers: {
-            'User-Agent': DEFAULT_UA,
-            'Referer': extracted.playerUrl
-        },
+        quality: resolvedQuality,
+        type: 'hls',
+        provider: 'dizibox',
+        headers: streamHeaders,
         subtitles: extracted.subtitles,
         behaviorHints: {
+            notWebReady: true,
             proxyHeaders: {
-                request: {
-                    'User-Agent': DEFAULT_UA,
-                    'Referer': extracted.playerUrl
-                }
+                request: streamHeaders
             }
         }
     };

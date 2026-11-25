@@ -88,6 +88,75 @@ async function resolveTmdbInfo(id, mediaType, signal) {
     }
 }
 
+var SITEMAP_CACHE_TTL_MS = 3600000;
+
+function romanToDigitText(text) {
+    return String(text || '')
+        .replace(/\bII\b/gi, '2')
+        .replace(/\bIII\b/gi, '3')
+        .replace(/\bIV\b/gi, '4')
+        .replace(/\bV\b/gi, '5');
+}
+
+function getSitemapCacheStore() {
+    var g = typeof globalThis !== 'undefined' ? globalThis : {};
+    if (!g.__MUM_BELGESELX_SITEMAP__) {
+        g.__MUM_BELGESELX_SITEMAP__ = Object.create(null);
+    }
+    return g.__MUM_BELGESELX_SITEMAP__;
+}
+
+async function loadSitemapCandidates(baseUrl, signal) {
+    var store = getSitemapCacheStore();
+    var cached = store[baseUrl];
+    if (cached && Date.now() < cached.expiresAt && Array.isArray(cached.candidates) && cached.candidates.length > 0) {
+        return cached.candidates;
+    }
+
+    var sitemapUrl = baseUrl + '/sitemap.php';
+    var res = await fetchWithTimeout(sitemapUrl, { headers: WORKING_HEADERS, signal: signal }, 6000);
+    if (res.status === 403 || res.status === 429) {
+        throw new ProviderError('HTTP_BLOCKED', 'Blocked fetching sitemap', 'search', res.status);
+    }
+    if (!res.ok) return [];
+
+    var xml = await res.text();
+    var candidates = [];
+    var seen = Object.create(null);
+    var locRegex = /<loc>\s*(https?:\/\/[^<]+?)\s*<\/loc>/gi;
+    var m;
+    while ((m = locRegex.exec(xml)) !== null) {
+        var loc = m[1];
+        if (loc.indexOf(baseUrl) !== 0) continue;
+        var pathMatch = loc.match(/\/belgesel\/([^/?#<]+)/i);
+        if (!pathMatch || !pathMatch[1]) continue;
+        var pathSlug = pathMatch[1];
+        if (pathSlug === 'belgesel' || pathSlug === 'belgeseldizi') continue;
+
+        var targetUrl = baseUrl + '/belgesel/' + pathSlug;
+        if (seen[targetUrl]) continue;
+        seen[targetUrl] = true;
+
+        var titleText = pathSlug.replace(/-/g, ' ');
+        var ym = pathSlug.match(/\b(19\d\d|20\d\d)\b/);
+        candidates.push({
+            title: titleText,
+            slug: pathSlug,
+            href: targetUrl,
+            year: ym ? ym[1] : ''
+        });
+    }
+
+    if (candidates.length > 0) {
+        store[baseUrl] = {
+            expiresAt: Date.now() + SITEMAP_CACHE_TTL_MS,
+            candidates: candidates
+        };
+    }
+
+    return candidates;
+}
+
 /**
  * Belgesel alt başlıkları ve kısa başlık çakışmalarında aday eşleştirmesi yapar.
  */
@@ -96,16 +165,24 @@ function pickDocumentaryFallback(candidates, targetTitle, targetYear, seasonNum)
     var tTokens = tokenize(targetTitle);
     if (tTokens.length === 0) return null;
     var tSlug = slugify(targetTitle);
+    var targetHasSequel = /\b(2|3|4|5|ii|iii|iv)\b/i.test(targetTitle);
 
     var matchingCandidates = [];
     for (var i = 0; i < candidates.length; i++) {
         var c = candidates[i];
         var cSlug = c.slug || slugify(c.title);
         var cTokens = new Set(tokenize(c.title).concat(tokenize(cSlug)));
-        
+
+        if (!targetHasSequel && tTokens.length <= 2) {
+            var candHasSequel = cTokens.has('2') || cTokens.has('3') || cTokens.has('4') ||
+                cTokens.has('ii') || cTokens.has('iii') || cTokens.has('iv') ||
+                /(?:^|-)([234]|ii|iii|iv)$/i.test(cSlug);
+            if (candHasSequel) continue;
+        }
+
         var allTokensMatch = tTokens.every(function (tok) { return cTokens.has(tok); });
         var slugPrefixMatch = cSlug.indexOf(tSlug) === 0 || cSlug.indexOf('-' + tSlug) !== -1;
-        
+
         if (allTokensMatch || slugPrefixMatch) {
             matchingCandidates.push(c);
         }
@@ -381,57 +458,266 @@ async function resolveOkRuStream(okUrl, signal) {
 }
 
 /**
+ * BelgeselX belgeselx2.php?cid=... / belgeselx.php?cid=... adreslerini Referer göndermeden
+ * 302 yönlendirmesiyle doğrudan oynatılabilir Google Photos / googlevideo MP4 akışına çözer.
+ */
+async function resolveBelgeselxCidStream(cidUrl, fallbackQuality, signal) {
+    if (!cidUrl) return null;
+    var currentUrl = cidUrl;
+    var q = /belgeselx2\.php/i.test(cidUrl) ? '720p' : (fallbackQuality || '480p');
+
+    try {
+        for (var hop = 0; hop < 4; hop++) {
+            var res = await fetchWithTimeout(currentUrl, {
+                headers: { 'User-Agent': DEFAULT_UA },
+                redirect: 'manual',
+                signal: signal
+            }, 5000);
+
+            if (res.status >= 300 && res.status < 400) {
+                var loc = res.headers && typeof res.headers.get === 'function' ? res.headers.get('location') : null;
+                if (!loc) break;
+                try { currentUrl = new URL(loc, currentUrl).href; } catch (_) { currentUrl = loc; }
+                if (/googlevideo\.com/i.test(currentUrl)) {
+                    return {
+                        url: currentUrl,
+                        type: 'mp4',
+                        quality: q,
+                        headers: { 'User-Agent': DEFAULT_UA }
+                    };
+                }
+                continue;
+            }
+
+            if (res.url && res.url !== currentUrl && !/belgeselx\.com/i.test(res.url)) {
+                currentUrl = res.url;
+            }
+
+            if (res.ok) {
+                var ct = (res.headers && typeof res.headers.get === 'function' ? res.headers.get('content-type') : '') || '';
+                if (/video\/|octet-stream/i.test(ct) || /googlevideo\.com/i.test(currentUrl)) {
+                    return {
+                        url: currentUrl,
+                        type: 'mp4',
+                        quality: q,
+                        headers: { 'User-Agent': DEFAULT_UA }
+                    };
+                }
+            }
+            break;
+        }
+    } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+            if (signal && signal.aborted) throw e;
+            return null;
+        }
+    }
+
+    if (/googlevideo\.com/i.test(currentUrl)) {
+        return {
+            url: currentUrl,
+            type: 'mp4',
+            quality: q,
+            headers: { 'User-Agent': DEFAULT_UA }
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Yandex.Disk (yadi.sk / disk.yandex.*) paylaşım linkini resmi public resources API üzerinden çözer.
+ */
+async function resolveYandexDiskStream(yadiUrl, fallbackQuality, signal) {
+    if (!yadiUrl) return null;
+    try {
+        var apiUrl = 'https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=' + encodeURIComponent(yadiUrl);
+        var res = await fetchWithTimeout(apiUrl, {
+            headers: { 'User-Agent': DEFAULT_UA },
+            signal: signal
+        }, 5000);
+        if (!res.ok) return null;
+        var data = await res.json();
+        if (data && typeof data.href === 'string' && /^https?:\/\//i.test(data.href)) {
+            if (/theblacklist711tr\.mp4/i.test(data.href)) return null;
+            return {
+                url: data.href,
+                type: 'mp4',
+                quality: fallbackQuality || '720p',
+                headers: { 'User-Agent': DEFAULT_UA }
+            };
+        }
+        return null;
+    } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+            if (signal && signal.aborted) throw e;
+        }
+        return null;
+    }
+}
+
+/**
+ * Dailymotion embed/video adresini player metadata API üzerinden HLS/MP4 akışına çözer.
+ */
+async function resolveDailymotionStream(dmUrl, fallbackQuality, signal) {
+    var match = String(dmUrl || '').match(/(?:dailymotion\.com\/(?:embed\/)?video\/|dai\.ly\/)([a-zA-Z0-9]+)/i);
+    if (!match) return null;
+    var videoId = match[1];
+
+    try {
+        var metaUrl = 'https://www.dailymotion.com/player/metadata/video/' + videoId;
+        var res = await fetchWithTimeout(metaUrl, {
+            headers: {
+                'User-Agent': DEFAULT_UA,
+                'Referer': 'https://www.dailymotion.com/'
+            },
+            signal: signal
+        }, 5000);
+        if (!res.ok) return null;
+        var data = await res.json();
+        if (!data || data.error || !data.qualities) return null;
+
+        var dmHeaders = {
+            'User-Agent': DEFAULT_UA,
+            'Referer': 'https://www.dailymotion.com/'
+        };
+
+        var prefOrder = ['1080', '720', '480', '380', '240', 'auto'];
+        for (var i = 0; i < prefOrder.length; i++) {
+            var qKey = prefOrder[i];
+            var list = data.qualities[qKey];
+            if (!Array.isArray(list) || list.length === 0) continue;
+
+            var mp4Entry = list.find(function (x) { return x && x.type === 'video/mp4' && x.url; });
+            if (mp4Entry) {
+                return {
+                    url: mp4Entry.url,
+                    type: 'mp4',
+                    quality: /^\d+$/.test(qKey) ? (qKey + 'p') : (fallbackQuality || '720p'),
+                    headers: dmHeaders
+                };
+            }
+            var hlsEntry = list.find(function (x) { return x && /mpegurl/i.test(x.type || '') && x.url; });
+            if (hlsEntry) {
+                return {
+                    url: hlsEntry.url,
+                    type: 'hls',
+                    quality: /^\d+$/.test(qKey) ? (qKey + 'p') : (fallbackQuality || '720p'),
+                    headers: dmHeaders
+                };
+            }
+        }
+        return null;
+    } catch (e) {
+        if (e && (e.name === 'AbortError' || e.message === 'TIMEOUT' || (signal && signal.aborted))) {
+            if (signal && signal.aborted) throw e;
+        }
+        return null;
+    }
+}
+
+function normalizeCandidateUrl(rawSrc) {
+    if (!rawSrc || typeof rawSrc !== 'string') return '';
+    var u = rawSrc.trim();
+    if (!u) return '';
+    if (u.indexOf('//') === 0) u = 'https:' + u;
+    var nestedMatch = u.match(/https?:\/\/[^/]+\/.*?(https?:\/\/.+)/i);
+    if (nestedMatch && nestedMatch[1]) u = nestedMatch[1];
+    return u;
+}
+
+/**
  * video/data/*.php sayfasından video kaynağını ayrıştırır ve direct stream linkini çözer.
  */
 async function resolvePlayerStream(pHtml, playerUrl, docHtml, targetEpisode, docPageUrl, signal) {
     if (!pHtml || typeof pHtml !== 'string') return null;
     var $ = cheerio.load(pHtml);
 
-    var rawSrc = $('iframe[src]').attr('src') || $('video source[src], video[src]').attr('src');
-    if (!rawSrc) {
-        var scripts = $('script').map(function () { return $(this).html() || ''; }).get().join('\n');
-        var directMatch = scripts.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i);
-        if (directMatch && directMatch[1]) rawSrc = directMatch[1];
-    }
-    if (!rawSrc) return null;
-
-    if (rawSrc.indexOf('//') === 0) rawSrc = 'https:' + rawSrc;
-    var nestedMatch = rawSrc.match(/https?:\/\/[^/]+\/.*?(https?:\/\/.+)/i);
-    if (nestedMatch && nestedMatch[1]) rawSrc = nestedMatch[1];
-
-    // Ölü ve placeholder linkleri filtrele
-    if (/theblacklist711tr\.mp4|googleapis\.com|recaptcha/i.test(rawSrc)) {
-        return null;
-    }
-
     var has1080p = /1080p?/i.test(pHtml) ||
                    (targetEpisode && /1080p?/i.test(targetEpisode.title)) ||
                    (docHtml && /1080p?/i.test(docHtml));
     var fallbackQuality = has1080p ? '1080p' : '720p';
 
-    // 1. Google Drive Embed Çözümleme
-    if (/drive\.google\.com/i.test(rawSrc)) {
-        var driveStream = await resolveGoogleDriveStream(rawSrc, signal);
-        if (driveStream) return driveStream;
+    // 1. Önce iframe kaynağını kontrol et
+    var iframeSrc = normalizeCandidateUrl($('iframe[src]').attr('src'));
+    if (iframeSrc && !/theblacklist711tr\.mp4|googleapis\.com|recaptcha/i.test(iframeSrc)) {
+        if (/drive\.google\.com/i.test(iframeSrc)) {
+            var driveStream = await resolveGoogleDriveStream(iframeSrc, signal);
+            if (driveStream) return driveStream;
+        }
+        if (/odnoklassniki\.ru|ok\.ru/i.test(iframeSrc)) {
+            var okStream = await resolveOkRuStream(iframeSrc, signal);
+            if (okStream) return okStream;
+        }
+        if (/yadi\.sk|disk\.yandex\./i.test(iframeSrc)) {
+            var yadiStream = await resolveYandexDiskStream(iframeSrc, fallbackQuality, signal);
+            if (yadiStream) return yadiStream;
+        }
+        if (/dailymotion\.com|dai\.ly/i.test(iframeSrc)) {
+            var dmStream = await resolveDailymotionStream(iframeSrc, fallbackQuality, signal);
+            if (dmStream) return dmStream;
+        }
+        if (/\.(mp4|m3u8)(\?|$)/i.test(iframeSrc)) {
+            return {
+                url: iframeSrc,
+                type: iframeSrc.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4',
+                quality: fallbackQuality,
+                headers: {
+                    'User-Agent': DEFAULT_UA,
+                    'Referer': docPageUrl
+                }
+            };
+        }
     }
 
-    // 2. OK.ru Embed Çözümleme
-    if (/odnoklassniki\.ru|ok\.ru/i.test(rawSrc)) {
-        var okStream = await resolveOkRuStream(rawSrc, signal);
-        if (okStream) return okStream;
-    }
-
-    // 3. Doğrudan MP4 / HLS bağlantısı
-    if (/\.(mp4|m3u8)(\?|$)/i.test(rawSrc)) {
-        return {
-            url: rawSrc,
-            type: rawSrc.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4',
-            quality: fallbackQuality,
-            headers: {
-                'User-Agent': DEFAULT_UA,
-                'Referer': docPageUrl
+    // 2. <script> içindeki JWPlayer kaynaklarını (new4.php belgeselx2.php?cid=... ve doğrudan m3u8/mp4) tara
+    // Not: new4.php DOM'unda sahte <video src="...theblacklist711tr.mp4"> bulunduğu için script taraması <video>'dan önce çalışmalıdır.
+    var scripts = $('script').map(function () { return $(this).html() || ''; }).get().join('\n');
+    if (scripts) {
+        var cidMatches = scripts.match(/https?:\/\/[^"'\s]*\/video\/belgeselx2?\.php\?cid=[^"'\s]+/gi) || [];
+        if (cidMatches.length > 0) {
+            cidMatches.sort(function (a, b) {
+                var aIs720 = /belgeselx2\.php/i.test(a) ? 0 : 1;
+                var bIs720 = /belgeselx2\.php/i.test(b) ? 0 : 1;
+                return aIs720 - bIs720;
+            });
+            for (var cIdx = 0; cIdx < cidMatches.length; cIdx++) {
+                var cidStream = await resolveBelgeselxCidStream(cidMatches[cIdx], fallbackQuality, signal);
+                if (cidStream) return cidStream;
             }
-        };
+        }
+
+        var directMatch = scripts.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i);
+        if (directMatch && directMatch[1]) {
+            var scriptSrc = normalizeCandidateUrl(directMatch[1]);
+            if (scriptSrc && !/theblacklist711tr\.mp4|googleapis\.com|recaptcha/i.test(scriptSrc)) {
+                return {
+                    url: scriptSrc,
+                    type: scriptSrc.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4',
+                    quality: fallbackQuality,
+                    headers: {
+                        'User-Agent': DEFAULT_UA,
+                        'Referer': docPageUrl
+                    }
+                };
+            }
+        }
+    }
+
+    // 3. Son olarak DOM <video> elementini kontrol et (ölü placeholder'ları atla)
+    var videoSrc = normalizeCandidateUrl($('video source[src], video[src]').attr('src'));
+    if (videoSrc && !/theblacklist711tr\.mp4|googleapis\.com|recaptcha/i.test(videoSrc)) {
+        if (/\.(mp4|m3u8)(\?|$)/i.test(videoSrc)) {
+            return {
+                url: videoSrc,
+                type: videoSrc.indexOf('.m3u8') !== -1 ? 'hls' : 'mp4',
+                quality: fallbackQuality,
+                headers: {
+                    'User-Agent': DEFAULT_UA,
+                    'Referer': docPageUrl
+                }
+            };
+        }
     }
 
     return null;
@@ -441,6 +727,7 @@ async function resolvePlayerStream(pHtml, playerUrl, docHtml, targetEpisode, doc
  * BelgeselX Sağlayıcı getStreams fonksiyonu
  */
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
+    await cfgReady();
     try {
         var signal = options && options.signal;
         if (typeof tmdbId === 'object' && tmdbId !== null) {
@@ -455,7 +742,9 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
         if (mediaType !== 'tv' && mediaType !== 'movie') return [];
 
         if (mediaType === 'tv') {
-            if (!Number.isInteger(Number(seasonNum)) || Number(seasonNum) < 0 ||
+            if (seasonNum === null || seasonNum === undefined || seasonNum === '' ||
+                episodeNum === null || episodeNum === undefined || episodeNum === '' ||
+                !Number.isInteger(Number(seasonNum)) || Number(seasonNum) < 0 ||
                 !Number.isInteger(Number(episodeNum)) || Number(episodeNum) < 1) {
                 return [];
             }
@@ -473,22 +762,26 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
         var displayTitle = trTitle || orgTitle || 'Belgesel';
 
         if (!trTitle && !orgTitle) {
-            return [];
+            throw new ProviderError('TMDB_ERROR', 'TMDB metadata unavailable', 'tmdb');
         }
 
         var targetDocUrl = null;
         var docHtml = null;
+        var blockedStatus = 0;
 
         // ── 1. Doğrudan Slug Probu ─────────────────────────────────────────
         var candidateSlugs = [];
         var titlesToCheck = [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)].concat(info.altTitles || []).filter(Boolean);
         titlesToCheck.forEach(function (t) {
-            var s = slugify(t);
-            if (s && candidateSlugs.indexOf(s) === -1) candidateSlugs.push(s);
-            if (t.includes(':') || t.includes('-')) {
-                var sPrefix = slugify(t.split(/[:\-]/)[0]);
-                if (sPrefix && candidateSlugs.indexOf(sPrefix) === -1) candidateSlugs.push(sPrefix);
-            }
+            var variants = [t, romanToDigitText(t)];
+            variants.forEach(function (tv) {
+                var s = slugify(tv);
+                if (s && candidateSlugs.indexOf(s) === -1) candidateSlugs.push(s);
+                if (tv.includes(':') || tv.includes('-')) {
+                    var sPrefix = slugify(tv.split(/[:\-]/)[0]);
+                    if (sPrefix && candidateSlugs.indexOf(sPrefix) === -1) candidateSlugs.push(sPrefix);
+                }
+            });
         });
 
         for (var sIdx = 0; sIdx < candidateSlugs.length; sIdx++) {
@@ -497,7 +790,12 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
             var testUrl = BASE_URL + '/belgesel/' + cSlug;
             try {
                 var probeRes = await fetchWithTimeout(testUrl, { headers: WORKING_HEADERS, signal: signal }, 4000);
+                if (probeRes.status === 403 || probeRes.status === 429) {
+                    blockedStatus = probeRes.status;
+                    continue;
+                }
                 if (probeRes.ok) {
+                    if (probeRes.url && probeRes.url.indexOf('/404') !== -1) continue;
                     var probeText = await probeRes.text();
                     if (probeText.indexOf('diziGetir') !== -1) {
                         targetDocUrl = testUrl;
@@ -512,46 +810,96 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
             }
         }
 
-        // ── 2. Arama ve Kart Ayrıştırma Fallback'i ────────────────────────────
+        // ── 2. Sitemap İndeksi ve Arama Fallback'i ──────────────────────────
         if (!docHtml) {
-            var searchQueries = [];
-            [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)].forEach(function (q) {
-                if (q && searchQueries.indexOf(q) === -1) searchQueries.push(q);
-            });
-
             var bestCandidate = null;
-            var allCandidateTitles = [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)].concat(info.altTitles || []).filter(Boolean);
+            var allCandidateTitles = [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)]
+                .concat(info.altTitles || [])
+                .filter(Boolean);
 
-            for (var qIdx = 0; qIdx < searchQueries.length; qIdx++) {
-                var q = searchQueries[qIdx];
-                if (!q) continue;
-                var searchUrl = BASE_URL + '/?s=' + encodeURIComponent(q);
-                var sRes = await fetchWithTimeout(searchUrl, { headers: WORKING_HEADERS, signal: signal }, 6000);
-                if (!sRes.ok) continue;
-                var sHtml = await sRes.text();
-                var $search = cheerio.load(sHtml);
+            var sitemapCandidates = [];
+            try {
+                sitemapCandidates = await loadSitemapCandidates(BASE_URL, signal);
+            } catch (smErr) {
+                if (smErr && (smErr.name === 'AbortError' || smErr.message === 'TIMEOUT' || smErr.name === 'ProviderError')) {
+                    throw smErr;
+                }
+            }
 
-                var candidates = parseSearchCandidates($search, BASE_URL);
-                if (candidates.length === 0) continue;
-
-                for (var tIdx = 0; tIdx < allCandidateTitles.length; tIdx++) {
-                    var testTitle = allCandidateTitles[tIdx];
-                    bestCandidate = pickBestCandidate(candidates, testTitle, targetYear, { minCoverage: 0.5, minScore: 40 });
+            if (sitemapCandidates.length > 0) {
+                for (var stIdx = 0; stIdx < allCandidateTitles.length; stIdx++) {
+                    var sTitle = allCandidateTitles[stIdx];
+                    bestCandidate = pickBestCandidate(sitemapCandidates, sTitle, targetYear, {
+                        minCoverage: 0.65,
+                        minScore: 45,
+                        preserveSlugNumbers: true
+                    });
+                    if (!bestCandidate && romanToDigitText(sTitle) !== sTitle) {
+                        bestCandidate = pickBestCandidate(sitemapCandidates, romanToDigitText(sTitle), targetYear, {
+                            minCoverage: 0.65,
+                            minScore: 45,
+                            preserveSlugNumbers: true
+                        });
+                    }
                     if (bestCandidate && bestCandidate.href) break;
                 }
-
                 if (!bestCandidate) {
-                    bestCandidate = pickDocumentaryFallback(candidates, trTitle || orgTitle, targetYear, seasonNum);
+                    bestCandidate = pickDocumentaryFallback(sitemapCandidates, trTitle || orgTitle, targetYear, seasonNum);
                 }
-
                 if (bestCandidate && bestCandidate.href) {
                     targetDocUrl = bestCandidate.href;
-                    break;
+                }
+            }
+
+            // Sitemap boş dönerse (örn. yerel mock/özel ortam), ?s= HTML aday ayrıştırmasına düş
+            if (!targetDocUrl && sitemapCandidates.length === 0) {
+                var searchQueries = [];
+                [trTitle, cleanTitle(trTitle), orgTitle, cleanTitle(orgTitle)].forEach(function (q) {
+                    if (q && searchQueries.indexOf(q) === -1) searchQueries.push(q);
+                });
+
+                for (var qIdx = 0; qIdx < searchQueries.length; qIdx++) {
+                    var q = searchQueries[qIdx];
+                    if (!q) continue;
+                    var searchUrl = BASE_URL + '/?s=' + encodeURIComponent(q);
+                    var sRes = await fetchWithTimeout(searchUrl, { headers: WORKING_HEADERS, signal: signal }, 6000);
+                    if (sRes.status === 403 || sRes.status === 429) {
+                        blockedStatus = sRes.status;
+                        continue;
+                    }
+                    if (!sRes.ok) continue;
+                    var sHtml = await sRes.text();
+                    var $search = cheerio.load(sHtml);
+
+                    var candidates = parseSearchCandidates($search, BASE_URL);
+                    if (candidates.length === 0) continue;
+
+                    for (var tIdx = 0; tIdx < allCandidateTitles.length; tIdx++) {
+                        var testTitle = allCandidateTitles[tIdx];
+                        bestCandidate = pickBestCandidate(candidates, testTitle, targetYear, {
+                            minCoverage: 0.5,
+                            minScore: 40,
+                            preserveSlugNumbers: true
+                        });
+                        if (bestCandidate && bestCandidate.href) break;
+                    }
+
+                    if (!bestCandidate) {
+                        bestCandidate = pickDocumentaryFallback(candidates, trTitle || orgTitle, targetYear, seasonNum);
+                    }
+
+                    if (bestCandidate && bestCandidate.href) {
+                        targetDocUrl = bestCandidate.href;
+                        break;
+                    }
                 }
             }
 
             if (targetDocUrl) {
                 var docRes = await fetchWithTimeout(targetDocUrl, { headers: WORKING_HEADERS, signal: signal }, 6000);
+                if (docRes.status === 403 || docRes.status === 429) {
+                    throw new ProviderError('HTTP_BLOCKED', 'Blocked fetching documentary page', 'details', docRes.status);
+                }
                 if (docRes.ok) {
                     docHtml = await docRes.text();
                 }
@@ -559,13 +907,16 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
         }
 
         if (!docHtml || docHtml.indexOf('diziGetir') === -1) {
-            return [];
+            if (blockedStatus) {
+                throw new ProviderError('HTTP_BLOCKED', 'Blocked by host', 'search', blockedStatus);
+            }
+            throw new ProviderError('NO_MATCH', 'No matching documentary found', 'matching');
         }
 
         // ── 3. Hedef Bölümün Ayrıştırılması ──────────────────────────────────
         var episodes = parseDiziGetirCalls(docHtml);
         if (!episodes || episodes.length === 0) {
-            return [];
+            throw new ProviderError('PARSE_ERROR', 'No episodes found in diziGetir', 'details');
         }
 
         var targetEpisode = null;
@@ -581,7 +932,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum, options) {
         }
 
         if (!targetEpisode) {
-            return [];
+            throw new ProviderError('NO_MATCH', 'Requested episode not found', 'matching');
         }
 
         // ── 4. Alternatifli Slot Çözümleme (ic1 -> ic2 -> ic3) ───────────────
